@@ -10,6 +10,7 @@ class Honeypot(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.db_path = "data/bot.db"
+
         self.setup_database()
 
     # =========================================================
@@ -21,30 +22,35 @@ class Honeypot(commands.Cog):
             self.db_path,
             timeout=10
         )
+
         conn.execute("PRAGMA busy_timeout = 10000")
         conn.execute("PRAGMA journal_mode = WAL")
+
         return conn
 
     def setup_database(self):
         conn = self.get_connection()
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS honeypot_settings (
-                guild_id INTEGER PRIMARY KEY,
-                channel_id INTEGER,
-                punishment TEXT NOT NULL DEFAULT 'ban',
-                enabled INTEGER NOT NULL DEFAULT 0
-            )
-        """)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS honeypot_settings (
+                    guild_id INTEGER PRIMARY KEY,
+                    channel_id INTEGER,
+                    punishment TEXT NOT NULL DEFAULT 'ban',
+                    enabled INTEGER NOT NULL DEFAULT 0
+                )
+            """)
 
-        conn.commit()
-        conn.close()
+            conn.commit()
+
+        finally:
+            conn.close()
 
     def get_settings(self, guild_id):
         conn = self.get_connection()
 
         try:
-            row = conn.execute(
+            return conn.execute(
                 """
                 SELECT channel_id, punishment, enabled
                 FROM honeypot_settings
@@ -52,8 +58,6 @@ class Honeypot(commands.Cog):
                 """,
                 (guild_id,)
             ).fetchone()
-
-            return row
 
         finally:
             conn.close()
@@ -138,6 +142,23 @@ class Honeypot(commands.Cog):
                 conn.close()
 
     # =========================================================
+    # NAMES
+    # =========================================================
+
+    @staticmethod
+    def punishment_name(punishment):
+        names = {
+            "ban": "🔨 Ban",
+            "mute": "🔇 Mute",
+            "kick": "👢 Kick"
+        }
+
+        return names.get(
+            punishment,
+            "🔨 Ban"
+        )
+
+    # =========================================================
     # LOGGING
     # =========================================================
 
@@ -160,25 +181,27 @@ class Honeypot(commands.Cog):
                     """,
                     (guild.id,)
                 ).fetchone()
+
             except sqlite3.Error:
                 row = None
 
         finally:
             conn.close()
 
-        if not row or not row[0]:
+        if not row:
             return
 
-        log_channel = guild.get_channel(row[0])
+        log_channel_id = row[0]
+
+        if not log_channel_id:
+            return
+
+        log_channel = guild.get_channel(
+            log_channel_id
+        )
 
         if not log_channel:
             return
-
-        punishment_names = {
-            "ban": "🔨 Ban",
-            "mute": "🔇 Mute",
-            "kick": "👢 Kick"
-        }
 
         embed = discord.Embed(
             title="🍯 Honeypot Triggered",
@@ -187,7 +210,7 @@ class Honeypot(commands.Cog):
                 f"**User ID:** `{member.id}`\n"
                 f"**Channel:** {channel.mention}\n"
                 f"**Action:** "
-                f"{punishment_names.get(punishment, punishment)}"
+                f"{self.punishment_name(punishment)}"
             ),
             timestamp=discord.utils.utcnow()
         )
@@ -197,9 +220,78 @@ class Honeypot(commands.Cog):
         )
 
         try:
-            await log_channel.send(embed=embed)
-        except (discord.Forbidden, discord.HTTPException):
+            await log_channel.send(
+                embed=embed
+            )
+
+        except (
+            discord.Forbidden,
+            discord.HTTPException
+        ):
             pass
+
+    # =========================================================
+    # CHANNEL SELECT
+    # =========================================================
+
+    class HoneypotChannelSelect(discord.ui.ChannelSelect):
+        def __init__(self, cog):
+            self.cog = cog
+
+            super().__init__(
+                placeholder="🍯 Choose honeypot channel...",
+                channel_types=[
+                    discord.ChannelType.text
+                ],
+                min_values=1,
+                max_values=1
+            )
+
+        async def callback(
+            self,
+            interaction: discord.Interaction
+        ):
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "❌ This can only be used in a server.",
+                    ephemeral=True
+                )
+                return
+
+            if not interaction.user.guild_permissions.administrator:
+                await interaction.response.send_message(
+                    "❌ You need **Administrator** permission.",
+                    ephemeral=True
+                )
+                return
+
+            channel = self.values[0]
+
+            self.cog.save_settings(
+                interaction.guild.id,
+                channel_id=channel.id
+            )
+
+            await interaction.response.send_message(
+                f"✅ Honeypot channel set to "
+                f"{channel.mention}.",
+                ephemeral=True
+            )
+
+            # Refresh the configuration panel.
+            try:
+                await interaction.message.edit(
+                    embed=self.cog.make_embed(
+                        interaction.guild
+                    ),
+                    view=self.view
+                )
+
+            except (
+                discord.Forbidden,
+                discord.HTTPException
+            ):
+                pass
 
     # =========================================================
     # PUNISHMENT SELECT
@@ -214,31 +306,49 @@ class Honeypot(commands.Cog):
                     label="Ban",
                     value="ban",
                     emoji="🔨",
-                    description="Ban anyone who triggers the honeypot."
+                    description=(
+                        "Ban anyone who triggers "
+                        "the honeypot."
+                    )
                 ),
                 discord.SelectOption(
                     label="Mute",
                     value="mute",
                     emoji="🔇",
-                    description="Timeout anyone who triggers the honeypot."
+                    description=(
+                        "Timeout anyone who triggers "
+                        "the honeypot."
+                    )
                 ),
                 discord.SelectOption(
                     label="Kick",
                     value="kick",
                     emoji="👢",
-                    description="Kick anyone who triggers the honeypot."
+                    description=(
+                        "Kick anyone who triggers "
+                        "the honeypot."
+                    )
                 )
             ]
 
             super().__init__(
                 placeholder="⚔️ Choose punishment...",
-                options=options
+                options=options,
+                min_values=1,
+                max_values=1
             )
 
         async def callback(
             self,
             interaction: discord.Interaction
         ):
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "❌ This can only be used in a server.",
+                    ephemeral=True
+                )
+                return
+
             if not interaction.user.guild_permissions.administrator:
                 await interaction.response.send_message(
                     "❌ You need **Administrator** permission.",
@@ -253,17 +363,25 @@ class Honeypot(commands.Cog):
                 punishment=punishment
             )
 
-            names = {
-                "ban": "🔨 Ban",
-                "mute": "🔇 Mute",
-                "kick": "👢 Kick"
-            }
-
             await interaction.response.send_message(
-                f"✅ Honeypot punishment set to "
-                f"**{names[punishment]}**.",
+                "✅ Honeypot punishment set to "
+                f"**{self.cog.punishment_name(punishment)}**.",
                 ephemeral=True
             )
+
+            try:
+                await interaction.message.edit(
+                    embed=self.cog.make_embed(
+                        interaction.guild
+                    ),
+                    view=self.view
+                )
+
+            except (
+                discord.Forbidden,
+                discord.HTTPException
+            ):
+                pass
 
     # =========================================================
     # CONFIG VIEW
@@ -271,55 +389,45 @@ class Honeypot(commands.Cog):
 
     class HoneypotView(discord.ui.View):
         def __init__(self, cog):
-            super().__init__(timeout=None)
+            super().__init__(
+                timeout=None
+            )
 
             self.cog = cog
+
+            # IMPORTANT:
+            # ChannelSelect is added as an item.
+            # It is NOT used as a decorator.
+            self.add_item(
+                cog.HoneypotChannelSelect(cog)
+            )
 
             self.add_item(
                 cog.PunishmentSelect(cog)
             )
 
-        @discord.ui.ChannelSelect(
-            placeholder="🍯 Choose honeypot channel...",
-            channel_types=[discord.ChannelType.text],
-            min_values=1,
-            max_values=1
-        )
-        async def channel_select(
-            self,
-            interaction: discord.Interaction,
-            select: discord.ui.ChannelSelect
-        ):
-            if not interaction.user.guild_permissions.administrator:
-                await interaction.response.send_message(
-                    "❌ You need **Administrator** permission.",
-                    ephemeral=True
-                )
-                return
-
-            channel = select.values[0]
-
-            self.cog.save_settings(
-                interaction.guild.id,
-                channel_id=channel.id
-            )
-
-            await interaction.response.send_message(
-                f"✅ Honeypot channel set to "
-                f"{channel.mention}.",
-                ephemeral=True
-            )
+        # -----------------------------------------------------
+        # ENABLE
+        # -----------------------------------------------------
 
         @discord.ui.button(
             label="Enable",
             emoji="🟢",
-            style=discord.ButtonStyle.success
+            style=discord.ButtonStyle.success,
+            custom_id="honeypot_enable"
         )
         async def enable(
             self,
             interaction: discord.Interaction,
             button: discord.ui.Button
         ):
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "❌ This can only be used in a server.",
+                    ephemeral=True
+                )
+                return
+
             if not interaction.user.guild_permissions.administrator:
                 await interaction.response.send_message(
                     "❌ You need **Administrator** permission.",
@@ -331,9 +439,31 @@ class Honeypot(commands.Cog):
                 interaction.guild.id
             )
 
-            if not settings or not settings[0]:
+            if not settings:
+                await interaction.response.send_message(
+                    "❌ Please configure the honeypot first.",
+                    ephemeral=True
+                )
+                return
+
+            channel_id = settings[0]
+
+            if not channel_id:
                 await interaction.response.send_message(
                     "❌ Please select a honeypot channel first.",
+                    ephemeral=True
+                )
+                return
+
+            channel = interaction.guild.get_channel(
+                channel_id
+            )
+
+            if not channel:
+                await interaction.response.send_message(
+                    "❌ The configured honeypot channel "
+                    "no longer exists. Please select "
+                    "another channel.",
                     ephemeral=True
                 )
                 return
@@ -345,9 +475,11 @@ class Honeypot(commands.Cog):
 
             await interaction.response.send_message(
                 "🟢 **Honeypot enabled!**\n\n"
-                "Anyone who sends a message in the "
-                "configured honeypot channel will "
-                "receive the selected punishment.",
+                f"🍯 Channel: {channel.mention}\n"
+                f"⚔️ Punishment: "
+                f"**{self.cog.punishment_name(settings[1])}**\n\n"
+                "Anyone who sends a message in this "
+                "channel will receive the selected punishment.",
                 ephemeral=True
             )
 
@@ -358,19 +490,35 @@ class Honeypot(commands.Cog):
                     ),
                     view=self
                 )
-            except (discord.Forbidden, discord.HTTPException):
+
+            except (
+                discord.Forbidden,
+                discord.HTTPException
+            ):
                 pass
+
+        # -----------------------------------------------------
+        # DISABLE
+        # -----------------------------------------------------
 
         @discord.ui.button(
             label="Disable",
             emoji="🔴",
-            style=discord.ButtonStyle.danger
+            style=discord.ButtonStyle.danger,
+            custom_id="honeypot_disable"
         )
         async def disable(
             self,
             interaction: discord.Interaction,
             button: discord.ui.Button
         ):
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "❌ This can only be used in a server.",
+                    ephemeral=True
+                )
+                return
+
             if not interaction.user.guild_permissions.administrator:
                 await interaction.response.send_message(
                     "❌ You need **Administrator** permission.",
@@ -395,19 +543,35 @@ class Honeypot(commands.Cog):
                     ),
                     view=self
                 )
-            except (discord.Forbidden, discord.HTTPException):
+
+            except (
+                discord.Forbidden,
+                discord.HTTPException
+            ):
                 pass
+
+        # -----------------------------------------------------
+        # TEST
+        # -----------------------------------------------------
 
         @discord.ui.button(
             label="Test",
             emoji="🧪",
-            style=discord.ButtonStyle.primary
+            style=discord.ButtonStyle.primary,
+            custom_id="honeypot_test"
         )
         async def test(
             self,
             interaction: discord.Interaction,
             button: discord.ui.Button
         ):
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "❌ This can only be used in a server.",
+                    ephemeral=True
+                )
+                return
+
             if not interaction.user.guild_permissions.administrator:
                 await interaction.response.send_message(
                     "❌ You need **Administrator** permission.",
@@ -419,40 +583,66 @@ class Honeypot(commands.Cog):
                 interaction.guild.id
             )
 
-            if not settings or not settings[0]:
+            if not settings:
                 await interaction.response.send_message(
-                    "❌ Configure a honeypot channel first.",
+                    "❌ Configure the honeypot first.",
                     ephemeral=True
                 )
                 return
 
-            punishment = settings[1]
+            channel_id, punishment, enabled = settings
 
-            names = {
-                "ban": "🔨 Ban",
-                "mute": "🔇 Mute",
-                "kick": "👢 Kick"
-            }
+            if not channel_id:
+                await interaction.response.send_message(
+                    "❌ Select a honeypot channel first.",
+                    ephemeral=True
+                )
+                return
+
+            channel = interaction.guild.get_channel(
+                channel_id
+            )
+
+            status = (
+                "🟢 Enabled"
+                if enabled
+                else "🔴 Disabled"
+            )
 
             await interaction.response.send_message(
                 "🧪 **Honeypot Test**\n\n"
-                f"Channel: <#{settings[0]}>\n"
-                f"Punishment: **{names.get(punishment)}**\n\n"
-                "The configuration is working correctly.\n"
+                f"🍯 Channel: "
+                f"{channel.mention if channel else 'Unknown'}\n"
+                f"⚔️ Punishment: "
+                f"**{self.cog.punishment_name(punishment)}**\n"
+                f"📡 Status: **{status}**\n\n"
+                "✅ Configuration is working.\n"
                 "No punishment was applied to you.",
                 ephemeral=True
             )
 
+        # -----------------------------------------------------
+        # REFRESH
+        # -----------------------------------------------------
+
         @discord.ui.button(
             label="Refresh",
             emoji="🔄",
-            style=discord.ButtonStyle.secondary
+            style=discord.ButtonStyle.secondary,
+            custom_id="honeypot_refresh"
         )
         async def refresh(
             self,
             interaction: discord.Interaction,
             button: discord.ui.Button
         ):
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "❌ This can only be used in a server.",
+                    ephemeral=True
+                )
+                return
+
             if not interaction.user.guild_permissions.administrator:
                 await interaction.response.send_message(
                     "❌ You need **Administrator** permission.",
@@ -468,38 +658,38 @@ class Honeypot(commands.Cog):
             )
 
     # =========================================================
-    # EMBED
+    # CONFIG EMBED
     # =========================================================
 
     def make_embed(self, guild):
-        settings = self.get_settings(guild.id)
+        settings = self.get_settings(
+            guild.id
+        )
 
         if settings:
             channel_id, punishment, enabled = settings
+
         else:
             channel_id = None
             punishment = "ban"
             enabled = 0
 
-        channel = (
-            guild.get_channel(channel_id)
-            if channel_id
-            else None
-        )
+        channel = None
 
-        punishment_names = {
-            "ban": "🔨 Ban",
-            "mute": "🔇 Mute",
-            "kick": "👢 Kick"
-        }
+        if channel_id:
+            channel = guild.get_channel(
+                channel_id
+            )
 
         embed = discord.Embed(
             title="🍯 Honeypot Configuration",
             description=(
-                "Configure your server's Honeypot security system.\n\n"
-                "⚠️ **Warning:** Anyone who sends a message "
-                "in the selected Honeypot channel will "
-                "automatically receive the selected punishment."
+                "Configure your server's Honeypot "
+                "security system.\n\n"
+                "⚠️ **Warning:** Anyone who sends a "
+                "message in the configured Honeypot "
+                "channel will automatically receive "
+                "the selected punishment."
             )
         )
 
@@ -515,9 +705,8 @@ class Honeypot(commands.Cog):
 
         embed.add_field(
             name="⚔️ Punishment",
-            value=punishment_names.get(
-                punishment,
-                "🔨 Ban"
+            value=self.punishment_name(
+                punishment
             ),
             inline=True
         )
@@ -533,11 +722,12 @@ class Honeypot(commands.Cog):
         )
 
         embed.add_field(
-            name="How it works",
+            name="⚡ How It Works",
             value=(
-                "Member sends a message → "
-                "message is deleted → "
-                "selected punishment is applied."
+                "A member sends a message in the "
+                "Honeypot channel → the message is "
+                "deleted → the selected punishment "
+                "is applied automatically."
             ),
             inline=False
         )
@@ -549,13 +739,17 @@ class Honeypot(commands.Cog):
         return embed
 
     # =========================================================
-    # SLASH COMMAND
+    # SLASH COMMAND GROUP
     # =========================================================
 
     honeypot = app_commands.Group(
         name="honeypot",
         description="Configure the server Honeypot system."
     )
+
+    # =========================================================
+    # /HONEYPOT SETUP
+    # =========================================================
 
     @honeypot.command(
         name="setup",
@@ -586,10 +780,18 @@ class Honeypot(commands.Cog):
             interaction.guild
         )
 
+        view = self.HoneypotView(
+            self
+        )
+
         await interaction.response.send_message(
             embed=embed,
-            view=self.HoneypotView(self)
+            view=view
         )
+
+    # =========================================================
+    # COMMAND ERROR
+    # =========================================================
 
     @setup.error
     async def setup_error(
@@ -616,6 +818,7 @@ class Honeypot(commands.Cog):
                     message,
                     ephemeral=True
                 )
+
         else:
             raise error
 
@@ -629,7 +832,7 @@ class Honeypot(commands.Cog):
         message: discord.Message
     ):
         # Ignore DMs.
-        if not message.guild:
+        if message.guild is None:
             return
 
         # Ignore bots.
@@ -645,23 +848,27 @@ class Honeypot(commands.Cog):
 
         channel_id, punishment, enabled = settings
 
-        # Honeypot disabled.
+        # Disabled.
         if not enabled:
             return
 
-        # No channel configured.
+        # No channel.
         if not channel_id:
             return
 
-        # Message isn't in Honeypot channel.
+        # Wrong channel.
         if message.channel.id != channel_id:
             return
 
         member = message.author
 
-        # Delete triggering message.
+        # =====================================================
+        # DELETE MESSAGE
+        # =====================================================
+
         try:
             await message.delete()
+
         except (
             discord.Forbidden,
             discord.HTTPException
@@ -672,40 +879,55 @@ class Honeypot(commands.Cog):
         # APPLY PUNISHMENT
         # =====================================================
 
+        action_success = False
+
         try:
             if punishment == "ban":
+
                 await message.guild.ban(
                     member,
                     reason="Honeypot triggered"
                 )
 
+                action_success = True
+
             elif punishment == "kick":
+
                 await message.guild.kick(
                     member,
                     reason="Honeypot triggered"
                 )
 
+                action_success = True
+
             elif punishment == "mute":
-                # Discord's maximum timeout is 28 days.
-                until = (
+
+                # Discord maximum timeout:
+                # 28 days.
+                timeout_until = (
                     discord.utils.utcnow()
-                    + datetime.timedelta(days=28)
+                    + datetime.timedelta(
+                        days=28
+                    )
                 )
 
                 await member.timeout(
-                    until,
+                    timeout_until,
                     reason="Honeypot triggered"
                 )
 
+                action_success = True
+
         except discord.Forbidden:
-            # Bot doesn't have enough permissions /
-            # role hierarchy prevents the action.
-            pass
+            action_success = False
 
         except discord.HTTPException:
-            pass
+            action_success = False
 
-        # Send moderation log.
+        # =====================================================
+        # LOG
+        # =====================================================
+
         await self.send_log(
             message.guild,
             member,
@@ -713,6 +935,10 @@ class Honeypot(commands.Cog):
             punishment
         )
 
+
+# =============================================================
+# SETUP
+# =============================================================
 
 async def setup(bot):
     await bot.add_cog(
