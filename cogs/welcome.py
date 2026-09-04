@@ -8,54 +8,57 @@ from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 
-DEFAULT_MESSAGE = (
-    "Welcome {user} to {server}! 🎉\n"
-    "You are member #{member_count}."
-)
+DEFAULT_MESSAGE = "Welcome {user} to {server}! 🎉"
 
-# Animated card settings
-CARD_WIDTH = 800
-CARD_HEIGHT = 450
-FRAME_COUNT = 12
-FRAME_DURATION = 90  # milliseconds
+CARD_WIDTH = 900
+CARD_HEIGHT = 500
+FRAME_COUNT = 16
+FRAME_DURATION = 80
 
+
+# ---------------------------------------------------------
+# Fonts
+# ---------------------------------------------------------
 
 def get_font(size: int, bold: bool = False):
-    """Load a good system font, with a safe fallback."""
-
-    possible_fonts = []
-
     if bold:
-        possible_fonts = [
+        fonts = [
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
         ]
     else:
-        possible_fonts = [
+        fonts = [
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
         ]
 
-    for path in possible_fonts:
+    for font_path in fonts:
         try:
-            return ImageFont.truetype(path, size)
+            return ImageFont.truetype(font_path, size)
         except OSError:
             continue
 
     return ImageFont.load_default()
 
 
-def centered_text(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    y: int,
+# ---------------------------------------------------------
+# Text helpers
+# ---------------------------------------------------------
+
+def draw_centered(
+    draw,
+    text,
+    y,
     font,
     fill,
 ):
-    """Draw centered text."""
+    bbox = draw.textbbox(
+        (0, 0),
+        text,
+        font=font,
+    )
 
-    box = draw.textbbox((0, 0), text, font=font)
-    width = box[2] - box[0]
+    width = bbox[2] - bbox[0]
 
     x = (CARD_WIDTH - width) // 2
 
@@ -67,24 +70,20 @@ def centered_text(
     )
 
 
-def circular_avatar(avatar: Image.Image, size: int):
-    """Create a circular avatar."""
+# ---------------------------------------------------------
+# Avatar
+# ---------------------------------------------------------
 
+def make_circular_avatar(
+    avatar: Image.Image,
+    size: int = 190,
+):
     avatar = avatar.convert("RGBA")
-    avatar.thumbnail((size, size), Image.Resampling.LANCZOS)
 
-    canvas = Image.new(
-        "RGBA",
-        (size, size),
-        (0, 0, 0, 0),
-    )
-
-    x = (size - avatar.width) // 2
-    y = (size - avatar.height) // 2
-
-    canvas.alpha_composite(
+    avatar = ImageOps.fit(
         avatar,
-        (x, y),
+        (size, size),
+        method=Image.Resampling.LANCZOS,
     )
 
     mask = Image.new(
@@ -100,27 +99,33 @@ def circular_avatar(avatar: Image.Image, size: int):
         fill=255,
     )
 
-    canvas.putalpha(mask)
+    avatar.putalpha(mask)
 
-    return canvas
+    return avatar
 
+
+# ---------------------------------------------------------
+# Download user's Discord avatar
+# ---------------------------------------------------------
 
 async def download_avatar(member: discord.Member):
-    """Download the joining member's Discord avatar."""
-
     try:
-        url = member.display_avatar.replace(
+        avatar_url = member.display_avatar.replace(
             format="png",
-            size=256,
+            size=512,
         ).url
 
-        timeout = aiohttp.ClientTimeout(total=10)
+        timeout = aiohttp.ClientTimeout(
+            total=10
+        )
 
         async with aiohttp.ClientSession(
             timeout=timeout
         ) as session:
 
-            async with session.get(url) as response:
+            async with session.get(
+                avatar_url
+            ) as response:
 
                 if response.status != 200:
                     return None
@@ -135,101 +140,300 @@ async def download_avatar(member: discord.Member):
         return None
 
 
-def create_animated_welcome_gif(
+# ---------------------------------------------------------
+# Create animated welcome GIF
+# ---------------------------------------------------------
+
+def create_welcome_gif(
     member: discord.Member,
     avatar: Image.Image | None,
     custom_message: str,
 ):
-    """Generate an animated Discord welcome GIF."""
-
-    frames = []
-
-    # Member information
     display_name = member.display_name
     server_name = member.guild.name
     member_count = member.guild.member_count or 0
 
-    # Replace variables in custom message.
+    # -----------------------------------------------------
+    # Format message variables
+    # -----------------------------------------------------
+
     formatted_message = (
         custom_message
-        .replace("{user}", member.mention)
-        .replace("{username}", member.name)
-        .replace("{server}", server_name)
-        .replace("{member_count}", str(member_count))
+        .replace(
+            "{user}",
+            f"@{display_name}",
+        )
+        .replace(
+            "{username}",
+            member.name,
+        )
+        .replace(
+            "{server}",
+            server_name,
+        )
+        .replace(
+            "{member_count}",
+            str(member_count),
+        )
     )
 
-    # Keep generated card readable.
-    message_lines = formatted_message.splitlines()
+    # -----------------------------------------------------
+    # Avatar fallback
+    # -----------------------------------------------------
 
-    if len(message_lines) > 2:
-        message_lines = message_lines[:2]
-
-    # Prepare avatar.
     if avatar is None:
         avatar = Image.new(
             "RGBA",
-            (256, 256),
-            (70, 70, 80, 255),
+            (512, 512),
+            (55, 60, 80, 255),
         )
 
-        avatar_draw = ImageDraw.Draw(avatar)
+        avatar_draw = ImageDraw.Draw(
+            avatar
+        )
 
         avatar_draw.ellipse(
-            (20, 20, 236, 236),
-            fill=(100, 100, 115, 255),
+            (20, 20, 492, 492),
+            fill=(80, 90, 120, 255),
         )
 
         avatar_draw.text(
-            (128, 128),
+            (256, 256),
             "?",
             anchor="mm",
-            font=get_font(90, True),
+            font=get_font(150, True),
             fill=(255, 255, 255, 255),
         )
 
-    avatar = circular_avatar(
+    avatar = make_circular_avatar(
         avatar,
-        180,
+        190,
     )
 
-    title_font = get_font(42, True)
-    name_font = get_font(48, True)
-    server_font = get_font(30, True)
-    member_font = get_font(20, True)
-    message_font = get_font(18)
+    # -----------------------------------------------------
+    # Fonts
+    # -----------------------------------------------------
 
-    for frame_number in range(FRAME_COUNT):
+    small_font = get_font(
+        22,
+        True,
+    )
+
+    welcome_font = get_font(
+        38,
+        True,
+    )
+
+    name_font = get_font(
+        54,
+        True,
+    )
+
+    server_font = get_font(
+        30,
+        True,
+    )
+
+    message_font = get_font(
+        19,
+        False,
+    )
+
+    frames = []
+
+    # -----------------------------------------------------
+    # Generate frames
+    # -----------------------------------------------------
+
+    for frame_number in range(
+        FRAME_COUNT
+    ):
 
         frame = Image.new(
             "RGBA",
-            (CARD_WIDTH, CARD_HEIGHT),
-            (13, 15, 25, 255),
+            (
+                CARD_WIDTH,
+                CARD_HEIGHT,
+            ),
+            (10, 13, 25, 255),
         )
 
-        draw = ImageDraw.Draw(frame)
+        draw = ImageDraw.Draw(
+            frame
+        )
 
         # -------------------------------------------------
-        # Animated background
+        # Background gradient
         # -------------------------------------------------
 
-        # Soft blue/purple gradient.
-        for y in range(CARD_HEIGHT):
+        for y in range(
+            CARD_HEIGHT
+        ):
 
             ratio = y / CARD_HEIGHT
 
-            r = int(12 + ratio * 18)
-            g = int(16 + ratio * 8)
-            b = int(35 + ratio * 45)
-
-            draw.line(
-                [(0, y), (CARD_WIDTH, y)],
-                fill=(r, g, b, 255),
+            r = int(
+                8
+                + ratio * 20
             )
 
-        # Moving glowing particles.
+            g = int(
+                12
+                + ratio * 12
+            )
+
+            b = int(
+                30
+                + ratio * 50
+            )
+
+            draw.line(
+                (
+                    0,
+                    y,
+                    CARD_WIDTH,
+                    y,
+                ),
+                fill=(
+                    r,
+                    g,
+                    b,
+                    255,
+                ),
+            )
+
+        # -------------------------------------------------
+        # Moving particles
+        # -------------------------------------------------
+
+        particle_layer = Image.new(
+            "RGBA",
+            (
+                CARD_WIDTH,
+                CARD_HEIGHT,
+            ),
+            (0, 0, 0, 0),
+        )
+
+        particle_draw = ImageDraw.Draw(
+            particle_layer
+        )
+
+        for particle in range(35):
+
+            angle = (
+                particle * 0.9
+                + frame_number * 0.12
+            )
+
+            radius = (
+                160
+                + (particle * 31) % 330
+            )
+
+            x = int(
+                CARD_WIDTH / 2
+                + math.cos(angle)
+                * radius
+            )
+
+            y = int(
+                CARD_HEIGHT / 2
+                + math.sin(angle)
+                * radius
+                * 0.55
+            )
+
+            if (
+                0 <= x < CARD_WIDTH
+                and 0 <= y < CARD_HEIGHT
+            ):
+
+                size = (
+                    2
+                    + particle % 4
+                )
+
+                particle_draw.ellipse(
+                    (
+                        x - size,
+                        y - size,
+                        x + size,
+                        y + size,
+                    ),
+                    fill=(
+                        80,
+                        180,
+                        255,
+                        190,
+                    ),
+                )
+
+        particle_layer = particle_layer.filter(
+            ImageFilter.GaussianBlur(
+                1
+            )
+        )
+
+        frame = Image.alpha_composite(
+            frame,
+            particle_layer,
+        )
+
+        draw = ImageDraw.Draw(
+            frame
+        )
+
+        # -------------------------------------------------
+        # Main glass card
+        # -------------------------------------------------
+
+        draw.rounded_rectangle(
+            (
+                25,
+                25,
+                CARD_WIDTH - 25,
+                CARD_HEIGHT - 25,
+            ),
+            radius=35,
+            fill=(
+                12,
+                18,
+                35,
+                220,
+            ),
+            outline=(
+                80,
+                170,
+                255,
+                255,
+            ),
+            width=3,
+        )
+
+        # -------------------------------------------------
+        # Animated border glow
+        # -------------------------------------------------
+
+        glow_alpha = int(
+            90
+            + 80
+            * (
+                1
+                + math.sin(
+                    frame_number
+                    * 0.6
+                )
+            )
+            / 2
+        )
+
         glow_layer = Image.new(
             "RGBA",
-            (CARD_WIDTH, CARD_HEIGHT),
+            (
+                CARD_WIDTH,
+                CARD_HEIGHT,
+            ),
             (0, 0, 0, 0),
         )
 
@@ -237,48 +441,27 @@ def create_animated_welcome_gif(
             glow_layer
         )
 
-        for particle in range(30):
-
-            angle = (
-                frame_number * 0.18
-                + particle * 1.7
-            )
-
-            radius = 100 + (
-                particle * 23
-            ) % 300
-
-            center_x = CARD_WIDTH // 2
-            center_y = CARD_HEIGHT // 2
-
-            x = int(
-                center_x
-                + math.cos(angle) * radius
-            )
-
-            y = int(
-                center_y
-                + math.sin(angle) * radius * 0.55
-            )
-
-            if (
-                0 <= x < CARD_WIDTH
-                and 0 <= y < CARD_HEIGHT
-            ):
-                size = 2 + (particle % 3)
-
-                glow_draw.ellipse(
-                    (
-                        x - size,
-                        y - size,
-                        x + size,
-                        y + size,
-                    ),
-                    fill=(100, 180, 255, 170),
-                )
+        glow_draw.rounded_rectangle(
+            (
+                20,
+                20,
+                CARD_WIDTH - 20,
+                CARD_HEIGHT - 20,
+            ),
+            radius=40,
+            outline=(
+                70,
+                160,
+                255,
+                glow_alpha,
+            ),
+            width=10,
+        )
 
         glow_layer = glow_layer.filter(
-            ImageFilter.GaussianBlur(1.2)
+            ImageFilter.GaussianBlur(
+                12
+            )
         )
 
         frame = Image.alpha_composite(
@@ -286,128 +469,127 @@ def create_animated_welcome_gif(
             glow_layer,
         )
 
-        draw = ImageDraw.Draw(frame)
-
-        # -------------------------------------------------
-        # Outer card border
-        # -------------------------------------------------
-
-        pulse = int(
-            20
-            + 25
-            * (
-                1
-                + math.sin(
-                    frame_number * 0.55
-                )
-            )
-            / 2
-        )
-
-        border_color = (
-            90,
-            170,
-            255,
-            255,
-        )
-
-        draw.rounded_rectangle(
-            (
-                12,
-                12,
-                CARD_WIDTH - 12,
-                CARD_HEIGHT - 12,
-            ),
-            radius=28,
-            outline=border_color,
-            width=3,
+        draw = ImageDraw.Draw(
+            frame
         )
 
         # -------------------------------------------------
-        # Member number badge
+        # Member count badge
         # -------------------------------------------------
 
-        badge_text = f"MEMBER #{member_count}"
+        badge_text = (
+            f"MEMBER #{member_count}"
+        )
 
-        badge_box = draw.textbbox(
+        badge_bbox = draw.textbbox(
             (0, 0),
             badge_text,
-            font=member_font,
+            font=small_font,
         )
 
         badge_width = (
-            badge_box[2] - badge_box[0] + 40
+            badge_bbox[2]
+            - badge_bbox[0]
+            + 45
         )
 
         badge_x = (
-            CARD_WIDTH - badge_width
+            CARD_WIDTH
+            - badge_width
         ) // 2
 
         draw.rounded_rectangle(
             (
                 badge_x,
-                30,
-                badge_x + badge_width,
-                65,
+                45,
+                badge_x
+                + badge_width,
+                82,
             ),
-            radius=18,
-            fill=(25, 35, 65, 230),
-            outline=(100, 190, 255, 220),
+            radius=20,
+            fill=(
+                25,
+                38,
+                70,
+                240,
+            ),
+            outline=(
+                100,
+                200,
+                255,
+                255,
+            ),
             width=2,
         )
 
-        centered_text(
+        draw_centered(
             draw,
             badge_text,
-            37,
-            member_font,
-            (220, 240, 255, 255),
+            52,
+            small_font,
+            (
+                220,
+                240,
+                255,
+                255,
+            ),
         )
 
         # -------------------------------------------------
         # Avatar glow
         # -------------------------------------------------
 
-        avatar_x = (
-            CARD_WIDTH - avatar.width
-        ) // 2
+        avatar_center_x = (
+            CARD_WIDTH // 2
+        )
 
-        avatar_y = 82
+        avatar_center_y = 180
 
-        glow_size = (
-            195 + int(
-                6
-                * math.sin(
-                    frame_number * 0.7
-                )
+        glow_radius = int(
+            105
+            + 7
+            * math.sin(
+                frame_number
+                * 0.7
             )
         )
 
         avatar_glow = Image.new(
             "RGBA",
-            (CARD_WIDTH, CARD_HEIGHT),
+            (
+                CARD_WIDTH,
+                CARD_HEIGHT,
+            ),
             (0, 0, 0, 0),
         )
 
-        glow_draw = ImageDraw.Draw(
+        avatar_glow_draw = ImageDraw.Draw(
             avatar_glow
         )
 
-        gx = CARD_WIDTH // 2
-        gy = avatar_y + 90
-
-        glow_draw.ellipse(
+        avatar_glow_draw.ellipse(
             (
-                gx - glow_size // 2,
-                gy - glow_size // 2,
-                gx + glow_size // 2,
-                gy + glow_size // 2,
+                avatar_center_x
+                - glow_radius,
+                avatar_center_y
+                - glow_radius,
+                avatar_center_x
+                + glow_radius,
+                avatar_center_y
+                + glow_radius,
             ),
-            fill=(60, 150, 255, pulse),
+            fill=(
+                40,
+                150,
+                255,
+                170,
+            ),
         )
 
         avatar_glow = avatar_glow.filter(
-            ImageFilter.GaussianBlur(18)
+            ImageFilter.GaussianBlur(
+                20
+            )
         )
 
         frame = Image.alpha_composite(
@@ -415,50 +597,86 @@ def create_animated_welcome_gif(
             avatar_glow,
         )
 
-        # Animated ring.
-        draw = ImageDraw.Draw(frame)
+        # -------------------------------------------------
+        # Animated avatar ring
+        # -------------------------------------------------
+
+        draw = ImageDraw.Draw(
+            frame
+        )
 
         ring_start = (
-            frame_number * 15
-        ) % 360
+            frame_number * 18
+        )
 
-        for offset in range(0, 360, 45):
+        for ring_part in range(
+            12
+        ):
 
             angle = math.radians(
-                ring_start + offset
+                ring_start
+                + ring_part * 30
             )
 
-            ring_radius = 101
+            radius = 103
 
             x1 = int(
-                gx
+                avatar_center_x
                 + math.cos(angle)
-                * ring_radius
+                * radius
             )
 
             y1 = int(
-                gy
+                avatar_center_y
                 + math.sin(angle)
-                * ring_radius
+                * radius
             )
 
             x2 = int(
-                gx
-                + math.cos(angle + 0.18)
-                * ring_radius
+                avatar_center_x
+                + math.cos(
+                    angle + 0.12
+                )
+                * radius
             )
 
             y2 = int(
-                gy
-                + math.sin(angle + 0.18)
-                * ring_radius
+                avatar_center_y
+                + math.sin(
+                    angle + 0.12
+                )
+                * radius
             )
 
             draw.line(
-                (x1, y1, x2, y2),
-                fill=(120, 210, 255, 255),
+                (
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                ),
+                fill=(
+                    100,
+                    210,
+                    255,
+                    255,
+                ),
                 width=4,
             )
+
+        # -------------------------------------------------
+        # Put user's avatar on card
+        # -------------------------------------------------
+
+        avatar_x = (
+            avatar_center_x
+            - avatar.width // 2
+        )
+
+        avatar_y = (
+            avatar_center_y
+            - avatar.height // 2
+        )
 
         frame.alpha_composite(
             avatar,
@@ -469,66 +687,118 @@ def create_animated_welcome_gif(
         )
 
         # -------------------------------------------------
-        # Welcome text
+        # Welcome
         # -------------------------------------------------
 
-        centered_text(
+        draw = ImageDraw.Draw(
+            frame
+        )
+
+        draw_centered(
             draw,
             "WELCOME",
             285,
-            title_font,
-            (235, 240, 255, 255),
+            welcome_font,
+            (
+                240,
+                245,
+                255,
+                255,
+            ),
         )
 
-        # Keep extremely long names from destroying layout.
+        # -------------------------------------------------
+        # User's OWN Discord name
+        # -------------------------------------------------
+
         safe_name = display_name
 
-        if len(safe_name) > 20:
-            safe_name = safe_name[:17] + "..."
+        if len(safe_name) > 22:
+            safe_name = (
+                safe_name[:19]
+                + "..."
+            )
 
-        centered_text(
+        draw_centered(
             draw,
             safe_name,
             330,
             name_font,
-            (90, 190, 255, 255),
+            (
+                90,
+                200,
+                255,
+                255,
+            ),
         )
 
-        centered_text(
+        # -------------------------------------------------
+        # Server name
+        # -------------------------------------------------
+
+        safe_server = server_name
+
+        if len(safe_server) > 35:
+            safe_server = (
+                safe_server[:32]
+                + "..."
+            )
+
+        draw_centered(
             draw,
-            f"to {server_name}",
-            385,
+            f"to {safe_server}",
+            400,
             server_font,
-            (235, 235, 245, 255),
+            (
+                235,
+                240,
+                255,
+                255,
+            ),
         )
 
         # -------------------------------------------------
-        # Small custom message
+        # Small message
         # -------------------------------------------------
+
+        message_lines = (
+            formatted_message
+            .splitlines()
+        )
 
         if message_lines:
 
-            small_text = message_lines[0]
+            text = message_lines[0]
 
-            if len(small_text) > 70:
-                small_text = (
-                    small_text[:67]
+            if len(text) > 75:
+                text = (
+                    text[:72]
                     + "..."
                 )
 
-            centered_text(
+            draw_centered(
                 draw,
-                small_text,
-                420,
+                text,
+                450,
                 message_font,
-                (185, 195, 215, 255),
+                (
+                    180,
+                    195,
+                    220,
+                    255,
+                ),
             )
 
         frames.append(
-            frame.convert("RGB")
+            frame.convert(
+                "RGB"
+            )
         )
 
-    # Save animated GIF to memory.
+    # -----------------------------------------------------
+    # Save GIF in memory
+    # -----------------------------------------------------
+
     output = io.BytesIO()
 
     frames[0].save(
@@ -546,7 +816,13 @@ def create_animated_welcome_gif(
     return output
 
 
-class WelcomeConfigView(discord.ui.View):
+# ---------------------------------------------------------
+# Configuration Panel
+# ---------------------------------------------------------
+
+class WelcomeConfigView(
+    discord.ui.View
+):
 
     def __init__(
         self,
@@ -554,30 +830,39 @@ class WelcomeConfigView(discord.ui.View):
         creator_id: int,
         panel_message_id: int | None = None,
     ):
-        super().__init__(timeout=None)
+        super().__init__(
+            timeout=None
+        )
 
         self.cog = cog
         self.creator_id = creator_id
-        self.panel_message_id = panel_message_id
+        self.panel_message_id = (
+            panel_message_id
+        )
 
     async def interaction_check(
         self,
         interaction: discord.Interaction,
-    ) -> bool:
+    ):
 
         if not interaction.guild:
             return False
 
+        # Must be administrator.
         if not interaction.user.guild_permissions.administrator:
 
             await interaction.response.send_message(
-                "❌ You must have **Administrator** permission to use this panel.",
+                "❌ You need **Administrator** permission to use this panel.",
                 ephemeral=True,
             )
 
             return False
 
-        if interaction.user.id != self.creator_id:
+        # Must be panel creator.
+        if (
+            interaction.user.id
+            != self.creator_id
+        ):
 
             await interaction.response.send_message(
                 "🔒 This configuration panel belongs to another administrator. "
@@ -589,6 +874,10 @@ class WelcomeConfigView(discord.ui.View):
 
         return True
 
+    # -----------------------------------------------------
+    # Channel
+    # -----------------------------------------------------
+
     @discord.ui.button(
         label="📢 Channel",
         style=discord.ButtonStyle.primary,
@@ -597,15 +886,21 @@ class WelcomeConfigView(discord.ui.View):
     )
     async def channel_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         await interaction.response.send_message(
-            "👇 Select the channel for welcome messages.",
-            view=WelcomeChannelView(self),
+            "👇 Select the welcome channel:",
+            view=WelcomeChannelView(
+                self
+            ),
             ephemeral=True,
         )
+
+    # -----------------------------------------------------
+    # Message
+    # -----------------------------------------------------
 
     @discord.ui.button(
         label="✏️ Message",
@@ -615,8 +910,8 @@ class WelcomeConfigView(discord.ui.View):
     )
     async def message_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         row = await self.cog.bot.database.fetchone(
@@ -625,12 +920,15 @@ class WelcomeConfigView(discord.ui.View):
             FROM guild_settings
             WHERE guild_id = ?
             """,
-            (interaction.guild.id,),
+            (
+                interaction.guild.id,
+            ),
         )
 
         current_message = (
             row["welcome_message"]
-            if row and row["welcome_message"]
+            if row
+            and row["welcome_message"]
             else DEFAULT_MESSAGE
         )
 
@@ -641,6 +939,10 @@ class WelcomeConfigView(discord.ui.View):
             )
         )
 
+    # -----------------------------------------------------
+    # Auto Role
+    # -----------------------------------------------------
+
     @discord.ui.button(
         label="🎭 Auto Role",
         style=discord.ButtonStyle.secondary,
@@ -649,15 +951,21 @@ class WelcomeConfigView(discord.ui.View):
     )
     async def role_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         await interaction.response.send_message(
-            "👇 Select the role to automatically give new members.",
-            view=WelcomeRoleView(self),
+            "👇 Select the automatic role:",
+            view=WelcomeRoleView(
+                self
+            ),
             ephemeral=True,
         )
+
+    # -----------------------------------------------------
+    # Test
+    # -----------------------------------------------------
 
     @discord.ui.button(
         label="🧪 Test",
@@ -667,8 +975,8 @@ class WelcomeConfigView(discord.ui.View):
     )
     async def test_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         row = await self.cog.bot.database.fetchone(
@@ -679,10 +987,15 @@ class WelcomeConfigView(discord.ui.View):
             FROM guild_settings
             WHERE guild_id = ?
             """,
-            (interaction.guild.id,),
+            (
+                interaction.guild.id,
+            ),
         )
 
-        if not row or not row["welcome_channel_id"]:
+        if (
+            not row
+            or not row["welcome_channel_id"]
+        ):
 
             await interaction.response.send_message(
                 "❌ Configure a welcome channel first.",
@@ -695,19 +1008,14 @@ class WelcomeConfigView(discord.ui.View):
             row["welcome_channel_id"]
         )
 
-        if not channel:
+        if channel is None:
 
             await interaction.response.send_message(
-                "❌ The configured welcome channel no longer exists.",
+                "❌ The configured channel no longer exists.",
                 ephemeral=True,
             )
 
             return
-
-        message = (
-            row["welcome_message"]
-            or DEFAULT_MESSAGE
-        )
 
         await interaction.response.defer(
             ephemeral=True
@@ -717,36 +1025,61 @@ class WelcomeConfigView(discord.ui.View):
             interaction.user
         )
 
-        gif = create_animated_welcome_gif(
+        message = (
+            row["welcome_message"]
+            or DEFAULT_MESSAGE
+        )
+
+        gif = create_welcome_gif(
             interaction.user,
             avatar,
             message,
         )
 
+        # IMPORTANT:
+        # The GIF is embedded inside Discord.
+        file = discord.File(
+            gif,
+            filename="welcome.gif",
+        )
+
+        embed = discord.Embed()
+
+        embed.set_image(
+            url="attachment://welcome.gif"
+        )
+
         await channel.send(
-            content=f"🧪 Welcome preview for {interaction.user.mention}",
-            file=discord.File(
-                gif,
-                filename="welcome.gif",
-            ),
+            embed=embed,
+            file=file,
         )
 
         await interaction.followup.send(
-            "✅ Animated welcome preview sent!",
+            "✅ Welcome card test sent!",
             ephemeral=True,
         )
 
 
-class WelcomeChannelView(discord.ui.View):
+# ---------------------------------------------------------
+# Channel selector
+# ---------------------------------------------------------
+
+class WelcomeChannelView(
+    discord.ui.View
+):
 
     def __init__(
         self,
-        parent_view: WelcomeConfigView,
+        parent_view,
     ):
-        super().__init__(timeout=60)
+        super().__init__(
+            timeout=60
+        )
 
         self.add_item(
-            WelcomeChannelSelect(parent_view)
+            WelcomeChannelSelect(
+                parent_view
+            )
         )
 
 
@@ -756,10 +1089,13 @@ class WelcomeChannelSelect(
 
     def __init__(
         self,
-        parent_view: WelcomeConfigView,
+        parent_view,
     ):
+
         super().__init__(
-            placeholder="Select welcome channel...",
+            placeholder=(
+                "Select welcome channel..."
+            ),
             channel_types=[
                 discord.ChannelType.text
             ],
@@ -771,7 +1107,7 @@ class WelcomeChannelSelect(
 
     async def callback(
         self,
-        interaction: discord.Interaction,
+        interaction,
     ):
 
         channel = self.values[0]
@@ -779,7 +1115,10 @@ class WelcomeChannelSelect(
         await self.parent_view.cog.bot.database.execute(
             """
             INSERT INTO guild_settings
-            (guild_id, welcome_channel_id)
+            (
+                guild_id,
+                welcome_channel_id
+            )
             VALUES (?, ?)
             ON CONFLICT(guild_id)
             DO UPDATE SET
@@ -803,16 +1142,26 @@ class WelcomeChannelSelect(
         )
 
 
-class WelcomeRoleView(discord.ui.View):
+# ---------------------------------------------------------
+# Role selector
+# ---------------------------------------------------------
+
+class WelcomeRoleView(
+    discord.ui.View
+):
 
     def __init__(
         self,
-        parent_view: WelcomeConfigView,
+        parent_view,
     ):
-        super().__init__(timeout=60)
+        super().__init__(
+            timeout=60
+        )
 
         self.add_item(
-            WelcomeRoleSelect(parent_view)
+            WelcomeRoleSelect(
+                parent_view
+            )
         )
 
 
@@ -822,10 +1171,13 @@ class WelcomeRoleSelect(
 
     def __init__(
         self,
-        parent_view: WelcomeConfigView,
+        parent_view,
     ):
+
         super().__init__(
-            placeholder="Select automatic role...",
+            placeholder=(
+                "Select automatic role..."
+            ),
             min_values=1,
             max_values=1,
         )
@@ -834,7 +1186,7 @@ class WelcomeRoleSelect(
 
     async def callback(
         self,
-        interaction: discord.Interaction,
+        interaction,
     ):
 
         role = self.values[0]
@@ -842,7 +1194,10 @@ class WelcomeRoleSelect(
         await self.parent_view.cog.bot.database.execute(
             """
             INSERT INTO guild_settings
-            (guild_id, autorole_id)
+            (
+                guild_id,
+                autorole_id
+            )
             VALUES (?, ?)
             ON CONFLICT(guild_id)
             DO UPDATE SET
@@ -866,15 +1221,20 @@ class WelcomeRoleSelect(
         )
 
 
+# ---------------------------------------------------------
+# Message modal
+# ---------------------------------------------------------
+
 class WelcomeMessageModal(
     discord.ui.Modal
 ):
 
     def __init__(
         self,
-        parent_view: WelcomeConfigView,
-        current_message: str,
+        parent_view,
+        current_message,
     ):
+
         super().__init__(
             title="Welcome Message"
         )
@@ -884,7 +1244,9 @@ class WelcomeMessageModal(
         self.message_input = discord.ui.TextInput(
             label="Welcome message",
             style=discord.TextStyle.paragraph,
-            placeholder="Welcome {user} to {server}!",
+            placeholder=(
+                "Welcome {user} to {server}!"
+            ),
             default=current_message,
             required=True,
             max_length=2000,
@@ -896,13 +1258,16 @@ class WelcomeMessageModal(
 
     async def on_submit(
         self,
-        interaction: discord.Interaction,
+        interaction,
     ):
 
         await self.parent_view.cog.bot.database.execute(
             """
             INSERT INTO guild_settings
-            (guild_id, welcome_message)
+            (
+                guild_id,
+                welcome_message
+            )
             VALUES (?, ?)
             ON CONFLICT(guild_id)
             DO UPDATE SET
@@ -926,36 +1291,55 @@ class WelcomeMessageModal(
         )
 
 
+# ---------------------------------------------------------
+# Welcome Cog
+# ---------------------------------------------------------
+
 class Welcome(commands.Cog):
 
-    def __init__(self, bot):
+    def __init__(
+        self,
+        bot,
+    ):
         self.bot = bot
 
     welcome_group = app_commands.Group(
         name="welcome",
-        description="Configure the welcome system.",
+        description=(
+            "Configure the welcome system."
+        ),
     )
 
     enable_group = app_commands.Group(
         name="enable",
-        description="Enable server features.",
+        description=(
+            "Enable server features."
+        ),
     )
 
     disable_group = app_commands.Group(
         name="disable",
-        description="Disable server features.",
+        description=(
+            "Disable server features."
+        ),
     )
+
+    # -----------------------------------------------------
+    # /welcome config
+    # -----------------------------------------------------
 
     @welcome_group.command(
         name="config",
-        description="Open the welcome configuration panel.",
+        description=(
+            "Open the welcome configuration panel."
+        ),
     )
     @app_commands.checks.has_permissions(
         administrator=True
     )
     async def welcome_config(
         self,
-        interaction: discord.Interaction,
+        interaction,
     ):
 
         await self.bot.database.execute(
@@ -964,10 +1348,16 @@ class Welcome(commands.Cog):
             (guild_id)
             VALUES (?)
             """,
-            (interaction.guild.id,),
+            (
+                interaction.guild.id,
+            ),
         )
 
-        message = await interaction.channel.send(
+        await interaction.response.defer(
+            ephemeral=True
+        )
+
+        panel_message = await interaction.channel.send(
             embed=await self.create_panel_embed(
                 interaction.guild
             ),
@@ -976,10 +1366,10 @@ class Welcome(commands.Cog):
         view = WelcomeConfigView(
             self,
             interaction.user.id,
-            message.id,
+            panel_message.id,
         )
 
-        await message.edit(
+        await panel_message.edit(
             view=view
         )
 
@@ -997,26 +1387,32 @@ class Welcome(commands.Cog):
             (
                 interaction.guild.id,
                 interaction.channel.id,
-                message.id,
+                panel_message.id,
                 interaction.user.id,
             ),
         )
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "✅ Welcome configuration panel created.",
             ephemeral=True,
         )
 
+    # -----------------------------------------------------
+    # /enable welcome
+    # -----------------------------------------------------
+
     @enable_group.command(
         name="welcome",
-        description="Enable automatic welcome messages.",
+        description=(
+            "Enable automatic welcome messages."
+        ),
     )
     @app_commands.checks.has_permissions(
         administrator=True
     )
     async def enable_welcome(
         self,
-        interaction: discord.Interaction,
+        interaction,
     ):
 
         row = await self.bot.database.fetchone(
@@ -1027,7 +1423,9 @@ class Welcome(commands.Cog):
             FROM guild_settings
             WHERE guild_id = ?
             """,
-            (interaction.guild.id,),
+            (
+                interaction.guild.id,
+            ),
         )
 
         if (
@@ -1050,7 +1448,9 @@ class Welcome(commands.Cog):
             SET welcome_enabled = 1
             WHERE guild_id = ?
             """,
-            (interaction.guild.id,),
+            (
+                interaction.guild.id,
+            ),
         )
 
         await interaction.response.send_message(
@@ -1058,16 +1458,22 @@ class Welcome(commands.Cog):
             ephemeral=True,
         )
 
+    # -----------------------------------------------------
+    # /disable welcome
+    # -----------------------------------------------------
+
     @disable_group.command(
         name="welcome",
-        description="Disable automatic welcome messages.",
+        description=(
+            "Disable automatic welcome messages."
+        ),
     )
     @app_commands.checks.has_permissions(
         administrator=True
     )
     async def disable_welcome(
         self,
-        interaction: discord.Interaction,
+        interaction,
     ):
 
         await self.bot.database.execute(
@@ -1076,7 +1482,9 @@ class Welcome(commands.Cog):
             SET welcome_enabled = 0
             WHERE guild_id = ?
             """,
-            (interaction.guild.id,),
+            (
+                interaction.guild.id,
+            ),
         )
 
         await interaction.response.send_message(
@@ -1085,9 +1493,13 @@ class Welcome(commands.Cog):
             ephemeral=True,
         )
 
+    # -----------------------------------------------------
+    # Configuration panel embed
+    # -----------------------------------------------------
+
     async def create_panel_embed(
         self,
-        guild: discord.Guild,
+        guild,
     ):
 
         row = await self.bot.database.fetchone(
@@ -1100,18 +1512,29 @@ class Welcome(commands.Cog):
             FROM guild_settings
             WHERE guild_id = ?
             """,
-            (guild.id,),
+            (
+                guild.id,
+            ),
         )
 
         enabled = bool(
-            row and row["welcome_enabled"]
+            row
+            and row["welcome_enabled"]
         )
 
-        channel_id = (
-            row["welcome_channel_id"]
-            if row
-            else None
-        )
+        channel = None
+
+        if row and row["welcome_channel_id"]:
+            channel = guild.get_channel(
+                row["welcome_channel_id"]
+            )
+
+        role = None
+
+        if row and row["autorole_id"]:
+            role = guild.get_role(
+                row["autorole_id"]
+            )
 
         message = (
             row["welcome_message"]
@@ -1119,29 +1542,11 @@ class Welcome(commands.Cog):
             else None
         )
 
-        role_id = (
-            row["autorole_id"]
-            if row
-            else None
-        )
-
-        channel = (
-            guild.get_channel(channel_id)
-            if channel_id
-            else None
-        )
-
-        role = (
-            guild.get_role(role_id)
-            if role_id
-            else None
-        )
-
         embed = discord.Embed(
             title="👋 WELCOME CONFIGURATION",
             description=(
-                "Configure your automatic animated "
-                "welcome system below."
+                "Configure your automatic "
+                "welcome card below."
             ),
             color=(
                 discord.Color.green()
@@ -1199,10 +1604,14 @@ class Welcome(commands.Cog):
 
         return embed
 
+    # -----------------------------------------------------
+    # Update panel
+    # -----------------------------------------------------
+
     async def update_panel_message(
         self,
-        guild: discord.Guild,
-        message_id: int,
+        guild,
+        message_id,
     ):
 
         row = await self.bot.database.fetchone(
@@ -1213,7 +1622,9 @@ class Welcome(commands.Cog):
             FROM welcome_panels
             WHERE message_id = ?
             """,
-            (message_id,),
+            (
+                message_id,
+            ),
         )
 
         if not row:
@@ -1230,7 +1641,6 @@ class Welcome(commands.Cog):
             message = await channel.fetch_message(
                 message_id
             )
-
         except discord.NotFound:
             return
 
@@ -1247,6 +1657,11 @@ class Welcome(commands.Cog):
             view=view,
         )
 
+    # -----------------------------------------------------
+    # Automatic welcome
+    # -----------------------------------------------------
+
+    @commands.Cog.listener()
     async def on_member_join(
         self,
         member: discord.Member,
@@ -1262,56 +1677,82 @@ class Welcome(commands.Cog):
             FROM guild_settings
             WHERE guild_id = ?
             """,
-            (member.guild.id,),
+            (
+                member.guild.id,
+            ),
         )
 
-        if not row or not row["welcome_enabled"]:
+        if (
+            not row
+            or not row["welcome_enabled"]
+        ):
             return
 
-        message = (
-            row["welcome_message"]
-            or DEFAULT_MESSAGE
-        )
+        # -------------------------------------------------
+        # Welcome card
+        # -------------------------------------------------
 
-        # Create and send animated welcome card.
-        if row["welcome_channel_id"]:
+        channel_id = row["welcome_channel_id"]
+
+        if channel_id:
 
             channel = member.guild.get_channel(
-                row["welcome_channel_id"]
+                channel_id
             )
 
             if channel:
 
                 try:
 
+                    # IMPORTANT:
+                    # This is the person who JUST JOINED.
                     avatar = await download_avatar(
                         member
                     )
 
-                    gif = create_animated_welcome_gif(
+                    message = (
+                        row["welcome_message"]
+                        or DEFAULT_MESSAGE
+                    )
+
+                    gif = create_welcome_gif(
                         member,
                         avatar,
                         message,
                     )
 
+                    file = discord.File(
+                        gif,
+                        filename="welcome.gif",
+                    )
+
+                    # Put GIF INSIDE embed.
+                    embed = discord.Embed()
+
+                    embed.set_image(
+                        url="attachment://welcome.gif"
+                    )
+
                     await channel.send(
-                        content=member.mention,
-                        file=discord.File(
-                            gif,
-                            filename="welcome.gif",
-                        ),
+                        embed=embed,
+                        file=file,
                     )
 
                 except Exception:
-                    # Do not crash the whole bot
-                    # because of a welcome image error.
+                    # Don't crash the bot if image
+                    # generation fails.
                     pass
 
-        # Automatic role.
-        if row["autorole_id"]:
+        # -------------------------------------------------
+        # Automatic role
+        # -------------------------------------------------
+
+        role_id = row["autorole_id"]
+
+        if role_id:
 
             role = member.guild.get_role(
-                row["autorole_id"]
+                role_id
             )
 
             if role:
@@ -1320,16 +1761,24 @@ class Welcome(commands.Cog):
 
                     await member.add_roles(
                         role,
-                        reason="Automatic welcome role",
+                        reason=(
+                            "Automatic welcome role"
+                        ),
                     )
 
-                except discord.Forbidden:
+                except (
+                    discord.Forbidden,
+                    discord.HTTPException,
+                ):
                     pass
 
-                except discord.HTTPException:
-                    pass
+    # -----------------------------------------------------
+    # Restore panels after restart
+    # -----------------------------------------------------
 
-    async def restore_panels(self):
+    async def restore_panels(
+        self
+    ):
 
         rows = await self.bot.database.fetchall(
             """
@@ -1361,7 +1810,13 @@ class Welcome(commands.Cog):
                 pass
 
 
-async def setup(bot):
+# ---------------------------------------------------------
+# Setup
+# ---------------------------------------------------------
+
+async def setup(
+    bot,
+):
 
     cog = Welcome(bot)
 
