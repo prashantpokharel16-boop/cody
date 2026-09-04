@@ -31,6 +31,7 @@ COGS = [
     "cogs.tickets",
     "cogs.giveaways",
     "cogs.announce",
+    "cogs.levels",
 ]
 
 
