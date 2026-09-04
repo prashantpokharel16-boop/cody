@@ -1,5 +1,5 @@
-import asyncio
 import logging
+import asyncio
 
 import discord
 from discord.ext import commands
@@ -9,19 +9,42 @@ from database import initialize_schema
 from database import Database
 
 
+# ============================================================
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=getattr(logging, config.LOG_LEVEL, logging.INFO),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+
+logger = logging.getLogger("cody")
+
+
+# ============================================================
+# COGS
+# ============================================================
+
 COGS = [
     "cogs.moderation",
     "cogs.welcome",
 ]
 
 
-class AllInOneBot(commands.Bot):
+# ============================================================
+# BOT
+# ============================================================
+
+class Cody(commands.Bot):
+
     def __init__(self):
         intents = discord.Intents.default()
 
+        # Required for member join / welcome system
         intents.members = True
+
+        # Useful for moderation and other future systems
         intents.message_content = True
-        intents.presences = True
 
         super().__init__(
             command_prefix="!",
@@ -29,114 +52,107 @@ class AllInOneBot(commands.Bot):
             help_command=None,
         )
 
-        self.database = Database(
-            config.DATABASE_PATH
-        )
+        self.database = None
+
+    # --------------------------------------------------------
+    # SETUP
+    # --------------------------------------------------------
 
     async def setup_hook(self):
-        """Initialize database and load all Cogs."""
+
+        logger.info("Starting bot setup...")
+
+        # ----------------------------------------------------
+        # DATABASE
+        # ----------------------------------------------------
+
+        self.database = Database(config.DATABASE_PATH)
 
         await self.database.connect()
 
-        await initialize_schema(
-            self.database
-        )
+        await initialize_schema(self.database)
+
+        logger.info("Database initialized.")
+
+        # ----------------------------------------------------
+        # LOAD COGS
+        # ----------------------------------------------------
 
         for extension in COGS:
             try:
                 await self.load_extension(extension)
-
-                logging.info(
-                    "Loaded extension: %s",
-                    extension,
-                )
+                logger.info("Loaded extension: %s", extension)
 
             except Exception:
-                logging.exception(
+                logger.exception(
                     "Failed to load extension: %s",
-                    extension,
+                    extension
                 )
 
-        guild_id = config.GUILD_ID
+        # ----------------------------------------------------
+        # GLOBAL SLASH COMMAND SYNC
+        # ----------------------------------------------------
 
-        if guild_id.isdigit():
-            guild = discord.Object(
-                id=int(guild_id)
-            )
-
-            self.tree.copy_global_to(
-                guild=guild
-            )
-
-            await self.tree.sync(
-                guild=guild
-            )
-
-            logging.info(
-                "Slash commands synced to guild %s",
-                guild_id,
-            )
-
-        else:
+        try:
             await self.tree.sync()
 
-            logging.info(
+            logger.info(
                 "Global slash commands synced."
             )
 
+        except Exception:
+            logger.exception(
+                "Failed to sync global slash commands."
+            )
+
+    # --------------------------------------------------------
+    # READY
+    # --------------------------------------------------------
+
     async def on_ready(self):
-        logging.info(
+
+        logger.info(
             "Logged in as %s (%s)",
             self.user,
-            self.user.id if self.user else "unknown",
+            self.user.id
         )
 
-        logging.info(
+        logger.info(
             "Connected to %d guild(s).",
-            len(self.guilds),
+            len(self.guilds)
         )
 
-    async def close(self):
-        """Gracefully close bot and database."""
+        for guild in self.guilds:
+            logger.info(
+                "Guild: %s (%s)",
+                guild.name,
+                guild.id
+            )
 
-        await self.database.close()
 
-        await super().close()
-
+# ============================================================
+# MAIN
+# ============================================================
 
 async def main():
+
     config.validate_config()
-    config.ensure_directories()
 
-    logging.basicConfig(
-        level=getattr(
-            logging,
-            config.LOG_LEVEL,
-            logging.INFO,
-        ),
-        format=(
-            "%(asctime)s | "
-            "%(levelname)s | "
-            "%(name)s | "
-            "%(message)s"
-        ),
-    )
-
-    bot = AllInOneBot()
+    bot = Cody()
 
     try:
-        await bot.start(
-            config.DISCORD_TOKEN
-        )
+        await bot.start(config.DISCORD_TOKEN)
 
     finally:
-        if not bot.is_closed():
-            await bot.close()
+
+        if bot.database is not None:
+            await bot.database.close()
 
 
 if __name__ == "__main__":
+
     try:
         asyncio.run(main())
 
     except KeyboardInterrupt:
-        pass
+        logger.info("Bot stopped.")
