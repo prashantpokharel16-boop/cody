@@ -675,7 +675,6 @@ class Welcome(commands.Cog):
 
         enabled = settings[0]
         channel_id = settings[1]
-        welcome_message = settings[2]
         auto_role_id = settings[3]
 
         if not enabled:
@@ -688,7 +687,7 @@ class Welcome(commands.Cog):
             channel_id
         )
 
-        if not channel:
+        if not isinstance(channel, discord.TextChannel):
             return
 
         # -----------------------------------------------------
@@ -719,7 +718,32 @@ class Welcome(commands.Cog):
                     pass
 
         # -----------------------------------------------------
-        # CREATE ONE BANNER
+        # MESSAGE 1 — WELCOME TEXT
+        # -----------------------------------------------------
+
+        welcome_text = (
+            f"Welcome {member.display_name} "
+            f"to {guild.name}! 🎉"
+        )
+
+        try:
+            await channel.send(
+                content=welcome_text,
+                allowed_mentions=discord.AllowedMentions(
+                    users=False,
+                    roles=False,
+                    everyone=False
+                )
+            )
+
+        except Exception as error:
+            print(
+                f"[WELCOME] Failed to send welcome text "
+                f"for {member}: {error}"
+            )
+
+        # -----------------------------------------------------
+        # MESSAGE 2 — EXISTING ANIMATED GIF
         # -----------------------------------------------------
 
         try:
@@ -738,43 +762,16 @@ class Welcome(commands.Cog):
                 url="attachment://welcome.gif"
             )
 
-            # IMPORTANT:
-            # Exactly ONE banner message.
             await channel.send(
                 embed=embed,
                 file=file
             )
 
-        except (
-            discord.Forbidden,
-            discord.HTTPException
-        ):
-            return
-
-        # -----------------------------------------------------
-        # CREATE ONE SEPARATE MESSAGE
-        # -----------------------------------------------------
-
-        formatted_message = self.format_message(
-            welcome_message,
-            member
-        )
-
-        try:
-            await channel.send(
-                formatted_message,
-                allowed_mentions=discord.AllowedMentions(
-                    users=True,
-                    roles=True,
-                    everyone=False
-                )
+        except Exception as error:
+            print(
+                f"[WELCOME] Failed to send animated banner "
+                f"for {member}: {error}"
             )
-
-        except (
-            discord.Forbidden,
-            discord.HTTPException
-        ):
-            pass
 
     # =========================================================
     # PANEL PERMISSION
