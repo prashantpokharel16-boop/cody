@@ -33,6 +33,7 @@ COGS = [
     "cogs.announce",
     "cogs.levels",
     "cogs.honeypot",
+    "cogs.auto_moderation",
 ]
 
 
