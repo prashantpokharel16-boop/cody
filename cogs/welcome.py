@@ -1,7 +1,6 @@
 import asyncio
 import io
 import sqlite3
-import time
 
 import discord
 from discord.ext import commands
@@ -658,82 +657,6 @@ class Welcome(commands.Cog):
         return output
 
     # =========================================================
-    # WELCOME MESSAGE DUPLICATE PROTECTION
-    # =========================================================
-
-    async def cleanup_duplicate_welcome_messages(
-        self,
-        channel,
-        *,
-        message_type,
-        content=None
-    ):
-        """
-        Keep only one matching welcome message of the same type
-        within the last 1 second.
-
-        Text and GIF are checked separately, so the intended
-        two-message welcome system is preserved:
-        1. Welcome text
-        2. Animated GIF
-        """
-
-        now = time.time()
-        matches = []
-
-        try:
-            async for message in channel.history(limit=20):
-                age = now - message.created_at.timestamp()
-
-                if age > 1.0:
-                    break
-
-                if message.author.id != self.bot.user.id:
-                    continue
-
-                if message_type == "text":
-                    if content is not None and message.content == content:
-                        matches.append(message)
-
-                elif message_type == "gif":
-                    is_welcome_gif = (
-                        bool(message.embeds)
-                        and any(
-                            embed.image
-                            and embed.image.url
-                            and "attachment://welcome.gif" in embed.image.url
-                            for embed in message.embeds
-                        )
-                    )
-
-                    if is_welcome_gif:
-                        matches.append(message)
-
-            if len(matches) > 1:
-                matches.sort(key=lambda m: m.created_at)
-
-                # Keep the first/oldest and delete extras.
-                for duplicate in matches[1:]:
-                    try:
-                        await duplicate.delete(
-                            reason="Duplicate welcome message protection"
-                        )
-                    except (
-                        discord.NotFound,
-                        discord.Forbidden,
-                        discord.HTTPException
-                    ):
-                        pass
-
-        except (
-            discord.Forbidden,
-            discord.HTTPException
-        ) as error:
-            print(
-                f"[WELCOME] Duplicate check failed: {error}"
-            )
-
-    # =========================================================
     # SEND WELCOME
     # =========================================================
 
@@ -752,9 +675,13 @@ class Welcome(commands.Cog):
 
         enabled = settings[0]
         channel_id = settings[1]
+        welcome_message = settings[2]
         auto_role_id = settings[3]
 
-        if not enabled or not channel_id:
+        if not enabled:
+            return
+
+        if not channel_id:
             return
 
         channel = guild.get_channel(
@@ -791,29 +718,34 @@ class Welcome(commands.Cog):
                     pass
 
         # -----------------------------------------------------
-        # MESSAGE 1 — WELCOME TEXT
+        # MESSAGE 1 — CONFIGURED WELCOME TEXT
         # -----------------------------------------------------
 
-        welcome_text = (
-            f"Welcome {member.display_name} "
-            f"to {guild.name}! 🎉"
+        formatted_message = self.format_message(
+            welcome_message,
+            member
         )
+
+        if not formatted_message.strip():
+            formatted_message = (
+                f"Welcome {member.display_name} "
+                f"to {guild.name}! 🎉"
+            )
 
         try:
             await channel.send(
-                welcome_text,
-                allowed_mentions=discord.AllowedMentions.none()
-            )
-
-            await self.cleanup_duplicate_welcome_messages(
-                channel,
-                message_type="text",
-                content=welcome_text
+                content=formatted_message,
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=True,
+                    everyone=False
+                )
             )
 
         except Exception as error:
             print(
-                f"[WELCOME] TEXT MESSAGE FAILED: {error}"
+                f"[WELCOME] Failed to send welcome text "
+                f"for {member}: {error}"
             )
 
         # -----------------------------------------------------
@@ -841,14 +773,10 @@ class Welcome(commands.Cog):
                 file=file
             )
 
-            await self.cleanup_duplicate_welcome_messages(
-                channel,
-                message_type="gif"
-            )
-
         except Exception as error:
             print(
-                f"[WELCOME] GIF MESSAGE FAILED: {error}"
+                f"[WELCOME] Failed to send animated banner "
+                f"for {member}: {error}"
             )
 
     # =========================================================
