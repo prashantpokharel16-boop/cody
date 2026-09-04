@@ -32,6 +32,7 @@ COGS = [
     "cogs.giveaways",
     "cogs.announce",
     "cogs.levels",
+    "cogs.honeypot",
 ]
 
 
