@@ -2,6 +2,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS guild_settings (
     guild_id INTEGER PRIMARY KEY,
     welcome_channel_id INTEGER,
+    welcome_message TEXT,
+    welcome_enabled INTEGER NOT NULL DEFAULT 0,
     goodbye_channel_id INTEGER,
     log_channel_id INTEGER,
     autorole_id INTEGER,
@@ -12,6 +14,17 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     ticket_staff_role_id INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS welcome_panels (
+    guild_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    message_id INTEGER PRIMARY KEY,
+    creator_id INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_welcome_panels_guild
+ON welcome_panels(guild_id);
 
 CREATE TABLE IF NOT EXISTS warnings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
