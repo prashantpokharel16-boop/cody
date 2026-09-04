@@ -75,6 +75,18 @@ CREATE TABLE IF NOT EXISTS giveaway_winners (
 );
 
 
+CREATE TABLE IF NOT EXISTS giveaway_message_counts (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    message_count INTEGER NOT NULL DEFAULT 0,
+
+    PRIMARY KEY (
+        guild_id,
+        user_id
+    )
+);
+
+
 CREATE INDEX IF NOT EXISTS idx_giveaways_guild
 ON giveaways(guild_id);
 
@@ -85,6 +97,10 @@ ON giveaways(status);
 
 CREATE INDEX IF NOT EXISTS idx_giveaway_entries
 ON giveaway_entries(giveaway_id);
+
+
+CREATE INDEX IF NOT EXISTS idx_giveaway_message_counts
+ON giveaway_message_counts(guild_id, user_id);
 """
 
 
@@ -102,7 +118,7 @@ async def setup_giveaway_database(bot):
 
 
 # ============================================================
-# DURATION PARSER
+# DURATION
 # ============================================================
 
 UNIT_SECONDS = {
@@ -136,30 +152,36 @@ UNIT_SECONDS = {
 
 def parse_duration(value: str) -> Optional[int]:
     """
-    Parse durations such as:
+    Accepted examples:
 
-    10s
-    10S
-    10 sec
-    10 seconds
+    30s
+    30S
+    30 sec
+    30 seconds
 
-    5m
-    5 mins
-    5 minutes
+    10m
+    10M
+    10 min
+    10 mins
+    10 minutes
 
     2h
     2hr
     2hrs
+    2 hour
     2 hours
 
-    2d
-    2 days
+    1d
+    1 day
+    1 days
 
     1w
     1 week
 
     1d 5h 30m
     2hrs 20mins
+
+    Capitalization is ignored.
     """
 
     if not value:
@@ -167,7 +189,6 @@ def parse_duration(value: str) -> Optional[int]:
 
     value = value.lower().strip()
 
-    # Remove commas.
     value = value.replace(",", " ")
 
     pattern = re.compile(
@@ -184,9 +205,9 @@ def parse_duration(value: str) -> Optional[int]:
         return None
 
     total = 0.0
-    consumed = 0
 
     for amount, unit in matches:
+
         unit = unit.lower()
 
         if unit not in UNIT_SECONDS:
@@ -197,10 +218,15 @@ def parse_duration(value: str) -> Optional[int]:
             * UNIT_SECONDS[unit]
         )
 
-    # Validate that the input doesn't contain
-    # random unsupported text.
-    cleaned = pattern.sub("", value)
-    cleaned = cleaned.replace(" ", "")
+    cleaned = pattern.sub(
+        "",
+        value,
+    )
+
+    cleaned = cleaned.replace(
+        " ",
+        "",
+    )
 
     if cleaned:
         return None
@@ -257,15 +283,24 @@ def format_duration(seconds: int) -> str:
 
 
 # ============================================================
-# JSON HELPERS
+# JSON
 # ============================================================
 
-def load_json(value, fallback):
+def load_json(
+    value,
+    fallback,
+):
 
     try:
-        result = json.loads(value)
 
-        if isinstance(result, type(fallback)):
+        result = json.loads(
+            value
+        )
+
+        if isinstance(
+            result,
+            type(fallback),
+        ):
             return result
 
     except Exception:
@@ -275,7 +310,7 @@ def load_json(value, fallback):
 
 
 # ============================================================
-# GET GIVEAWAY
+# GIVEAWAY DATABASE HELPERS
 # ============================================================
 
 async def get_giveaway(
@@ -351,16 +386,79 @@ async def get_giveaway_by_message(
 
 
 # ============================================================
-# CONFIGURATION MODALS
+# MESSAGE COUNTER
 # ============================================================
 
-class DurationModal(discord.ui.Modal):
+async def increment_message_count(
+    bot,
+    guild_id: int,
+    user_id: int,
+):
+
+    await bot.database.connection.execute(
+        """
+        INSERT INTO giveaway_message_counts (
+            guild_id,
+            user_id,
+            message_count
+        )
+        VALUES (?, ?, 1)
+
+        ON CONFLICT(guild_id, user_id)
+        DO UPDATE SET
+            message_count =
+                message_count + 1
+        """,
+        (
+            guild_id,
+            user_id,
+        ),
+    )
+
+    await bot.database.connection.commit()
+
+
+async def get_member_message_count(
+    bot,
+    guild_id: int,
+    user_id: int,
+) -> int:
+
+    cursor = await bot.database.connection.execute(
+        """
+        SELECT message_count
+        FROM giveaway_message_counts
+        WHERE guild_id = ?
+          AND user_id = ?
+        """,
+        (
+            guild_id,
+            user_id,
+        ),
+    )
+
+    row = await cursor.fetchone()
+
+    if not row:
+        return 0
+
+    return int(row[0])
+
+
+# ============================================================
+# DURATION MODAL
+# ============================================================
+
+class DurationModal(
+    discord.ui.Modal
+):
 
     def __init__(
         self,
         bot,
         giveaway_id: int,
     ):
+
         super().__init__(
             title="Set Giveaway Duration"
         )
@@ -371,7 +469,7 @@ class DurationModal(discord.ui.Modal):
         self.duration = discord.ui.TextInput(
             label="Duration",
             placeholder=(
-                "Examples: 30m, 2hrs, 1d 5h 30m"
+                "30m / 2hrs / 1d 5h 30m"
             ),
             max_length=100,
             required=True,
@@ -391,6 +489,7 @@ class DurationModal(discord.ui.Modal):
         )
 
         if seconds is None:
+
             await interaction.response.send_message(
                 "❌ Invalid duration.\n\n"
                 "Examples:\n"
@@ -400,6 +499,7 @@ class DurationModal(discord.ui.Modal):
                 "`1d 5h 30m`",
                 ephemeral=True,
             )
+
             return
 
         await self.bot.database.connection.execute(
@@ -424,13 +524,20 @@ class DurationModal(discord.ui.Modal):
         )
 
 
-class WinnersModal(discord.ui.Modal):
+# ============================================================
+# WINNERS MODAL
+# ============================================================
+
+class WinnersModal(
+    discord.ui.Modal
+):
 
     def __init__(
         self,
         bot,
         giveaway_id: int,
     ):
+
         super().__init__(
             title="Set Giveaway Winners"
         )
@@ -462,10 +569,12 @@ class WinnersModal(discord.ui.Modal):
             winners = 0
 
         if winners < 1 or winners > 100:
+
             await interaction.response.send_message(
                 "❌ Winners must be between **1 and 100**.",
                 ephemeral=True,
             )
+
             return
 
         await self.bot.database.connection.execute(
@@ -489,13 +598,20 @@ class WinnersModal(discord.ui.Modal):
         )
 
 
-class PrizeModal(discord.ui.Modal):
+# ============================================================
+# PRIZE MODAL
+# ============================================================
+
+class PrizeModal(
+    discord.ui.Modal
+):
 
     def __init__(
         self,
         bot,
         giveaway_id: int,
     ):
+
         super().__init__(
             title="Set Giveaway Prize"
         )
@@ -505,7 +621,7 @@ class PrizeModal(discord.ui.Modal):
 
         self.prize = discord.ui.TextInput(
             label="Prize",
-            placeholder="Example: Minecraft Premium Rank",
+            placeholder="Minecraft Premium Rank",
             max_length=256,
             required=True,
         )
@@ -535,10 +651,15 @@ class PrizeModal(discord.ui.Modal):
         await self.bot.database.connection.commit()
 
         await interaction.response.send_message(
-            f"🎁 Prize set to **{self.prize.value.strip()}**.",
+            f"🎁 Prize set to "
+            f"**{self.prize.value.strip()}**.",
             ephemeral=True,
         )
 
+
+# ============================================================
+# REQUIRED MESSAGES MODAL
+# ============================================================
 
 class RequiredMessagesModal(
     discord.ui.Modal
@@ -549,6 +670,7 @@ class RequiredMessagesModal(
         bot,
         giveaway_id: int,
     ):
+
         super().__init__(
             title="Required Messages"
         )
@@ -580,10 +702,12 @@ class RequiredMessagesModal(
             amount = -1
 
         if amount < 0:
+
             await interaction.response.send_message(
                 "❌ Enter a number such as `100`.",
                 ephemeral=True,
             )
+
             return
 
         await self.bot.database.connection.execute(
@@ -607,106 +731,8 @@ class RequiredMessagesModal(
         )
 
 
-class ExtraEntriesModal(
-    discord.ui.Modal
-):
-
-    def __init__(
-        self,
-        bot,
-        giveaway_id: int,
-        role_id: int,
-        role_name: str,
-    ):
-        super().__init__(
-            title="Set Extra Entries"
-        )
-
-        self.bot = bot
-        self.giveaway_id = giveaway_id
-        self.role_id = role_id
-
-        self.amount = discord.ui.TextInput(
-            label=f"Extra entries for {role_name[:40]}",
-            placeholder="Example: 3",
-            max_length=5,
-            required=True,
-        )
-
-        self.add_item(
-            self.amount
-        )
-
-    async def on_submit(
-        self,
-        interaction: discord.Interaction,
-    ):
-
-        try:
-            amount = int(
-                self.amount.value
-            )
-        except ValueError:
-            amount = -1
-
-        if amount < 0 or amount > 1000:
-            await interaction.response.send_message(
-                "❌ Enter a number between 0 and 1000.",
-                ephemeral=True,
-            )
-            return
-
-        giveaway = await get_giveaway(
-            self.bot,
-            self.giveaway_id,
-        )
-
-        if not giveaway:
-            await interaction.response.send_message(
-                "❌ Giveaway not found.",
-                ephemeral=True,
-            )
-            return
-
-        extra_entries = load_json(
-            giveaway[12],
-            {},
-        )
-
-        if amount == 0:
-            extra_entries.pop(
-                str(self.role_id),
-                None,
-            )
-        else:
-            extra_entries[
-                str(self.role_id)
-            ] = amount
-
-        await self.bot.database.connection.execute(
-            """
-            UPDATE giveaways
-            SET extra_entries = ?
-            WHERE id = ?
-              AND status = 'configuring'
-            """,
-            (
-                json.dumps(extra_entries),
-                self.giveaway_id,
-            ),
-        )
-
-        await self.bot.database.connection.commit()
-
-        await interaction.response.send_message(
-            f"✨ **{amount}** extra entries configured "
-            f"for **{role_name}**.",
-            ephemeral=True,
-        )
-
-
 # ============================================================
-# HOST USER SELECT
+# HOST SELECT
 # ============================================================
 
 class GiveawayHostSelect(
@@ -718,6 +744,7 @@ class GiveawayHostSelect(
         bot,
         giveaway_id: int,
     ):
+
         self.bot = bot
         self.giveaway_id = giveaway_id
 
@@ -764,6 +791,7 @@ class GiveawayHostView(
         bot,
         giveaway_id: int,
     ):
+
         super().__init__(
             timeout=120
         )
@@ -777,7 +805,7 @@ class GiveawayHostView(
 
 
 # ============================================================
-# REQUIRED ROLE SELECT
+# REQUIRED ROLE
 # ============================================================
 
 class RequiredRoleSelect(
@@ -789,6 +817,7 @@ class RequiredRoleSelect(
         bot,
         giveaway_id: int,
     ):
+
         self.bot = bot
         self.giveaway_id = giveaway_id
 
@@ -835,6 +864,7 @@ class RequiredRoleView(
         bot,
         giveaway_id: int,
     ):
+
         super().__init__(
             timeout=120
         )
@@ -848,7 +878,7 @@ class RequiredRoleView(
 
 
 # ============================================================
-# BANNED ROLE SELECT
+# BANNED ROLES
 # ============================================================
 
 class BannedRoleSelect(
@@ -860,6 +890,7 @@ class BannedRoleSelect(
         bot,
         giveaway_id: int,
     ):
+
         self.bot = bot
         self.giveaway_id = giveaway_id
 
@@ -909,6 +940,7 @@ class BannedRoleView(
         bot,
         giveaway_id: int,
     ):
+
         super().__init__(
             timeout=120
         )
@@ -922,8 +954,113 @@ class BannedRoleView(
 
 
 # ============================================================
-# EXTRA ENTRY ROLE SELECT
+# EXTRA ENTRIES
 # ============================================================
+
+class ExtraEntriesModal(
+    discord.ui.Modal
+):
+
+    def __init__(
+        self,
+        bot,
+        giveaway_id: int,
+        role_id: int,
+        role_name: str,
+    ):
+
+        super().__init__(
+            title="Set Extra Entries"
+        )
+
+        self.bot = bot
+        self.giveaway_id = giveaway_id
+        self.role_id = role_id
+
+        self.amount = discord.ui.TextInput(
+            label=f"Extra entries for {role_name[:40]}",
+            placeholder="Example: 3",
+            max_length=5,
+            required=True,
+        )
+
+        self.add_item(
+            self.amount
+        )
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction,
+    ):
+
+        try:
+            amount = int(
+                self.amount.value
+            )
+        except ValueError:
+            amount = -1
+
+        if amount < 0 or amount > 1000:
+
+            await interaction.response.send_message(
+                "❌ Enter a number between 0 and 1000.",
+                ephemeral=True,
+            )
+
+            return
+
+        giveaway = await get_giveaway(
+            self.bot,
+            self.giveaway_id,
+        )
+
+        if not giveaway:
+
+            await interaction.response.send_message(
+                "❌ Giveaway not found.",
+                ephemeral=True,
+            )
+
+            return
+
+        extras = load_json(
+            giveaway[12],
+            {},
+        )
+
+        if amount == 0:
+
+            extras.pop(
+                str(self.role_id),
+                None,
+            )
+
+        else:
+
+            extras[
+                str(self.role_id)
+            ] = amount
+
+        await self.bot.database.connection.execute(
+            """
+            UPDATE giveaways
+            SET extra_entries = ?
+            WHERE id = ?
+              AND status = 'configuring'
+            """,
+            (
+                json.dumps(extras),
+                self.giveaway_id,
+            ),
+        )
+
+        await self.bot.database.connection.commit()
+
+        await interaction.response.send_message(
+            f"✨ **{amount}** extra entries configured.",
+            ephemeral=True,
+        )
+
 
 class ExtraEntryRoleSelect(
     discord.ui.RoleSelect
@@ -934,6 +1071,7 @@ class ExtraEntryRoleSelect(
         bot,
         giveaway_id: int,
     ):
+
         self.bot = bot
         self.giveaway_id = giveaway_id
 
@@ -969,6 +1107,7 @@ class ExtraEntryRoleView(
         bot,
         giveaway_id: int,
     ):
+
         super().__init__(
             timeout=120
         )
@@ -982,26 +1121,26 @@ class ExtraEntryRoleView(
 
 
 # ============================================================
-# THUMBNAIL UPLOAD
+# THUMBNAIL
 # ============================================================
 
 async def request_thumbnail(
-    interaction: discord.Interaction,
+    interaction,
     bot,
-    giveaway_id: int,
-    creator_id: int,
+    giveaway_id,
+    creator_id,
 ):
 
     await interaction.response.send_message(
-        "🖼️ **Upload your giveaway thumbnail now.**\n\n"
-        "Send the image as an attachment in this channel "
-        "within **60 seconds**.\n\n"
-        "Only the administrator who created this giveaway "
-        "can upload it.",
+        "🖼️ **Upload the giveaway thumbnail now.**\n\n"
+        "Send an image attachment in this channel "
+        "within **60 seconds**.",
         ephemeral=True,
     )
 
-    def check(message: discord.Message):
+    def check(
+        message: discord.Message
+    ):
 
         return (
             message.author.id == creator_id
@@ -1019,26 +1158,22 @@ async def request_thumbnail(
         )
 
     except asyncio.TimeoutError:
-        try:
-            await interaction.followup.send(
-                "⌛ Thumbnail upload timed out.",
-                ephemeral=True,
-            )
-        except Exception:
-            pass
+
+        await interaction.followup.send(
+            "⌛ Thumbnail upload timed out.",
+            ephemeral=True,
+        )
 
         return
 
     attachment = message.attachments[0]
 
-    allowed = (
+    if not (
         attachment.content_type
         and attachment.content_type.startswith(
             "image/"
         )
-    )
-
-    if not allowed:
+    ):
 
         await interaction.followup.send(
             "❌ Please upload an image file.",
@@ -1050,7 +1185,7 @@ async def request_thumbnail(
     if attachment.size > 8 * 1024 * 1024:
 
         await interaction.followup.send(
-            "❌ Thumbnail must be **8 MB or smaller**.",
+            "❌ Thumbnail must be 8 MB or smaller.",
             ephemeral=True,
         )
 
@@ -1092,13 +1227,377 @@ async def request_thumbnail(
         pass
 
     await interaction.followup.send(
-        "🖼️ Giveaway thumbnail updated.",
+        "🖼️ Thumbnail updated successfully.",
         ephemeral=True,
     )
 
 
 # ============================================================
-# GIVEAWAY ENTRY VIEW
+# PARTICIPANT INFORMATION
+# ============================================================
+
+async def get_participants(
+    bot,
+    giveaway,
+    guild: discord.Guild,
+):
+
+    extras = load_json(
+        giveaway[12],
+        {},
+    )
+
+    cursor = await bot.database.connection.execute(
+        """
+        SELECT user_id
+        FROM giveaway_entries
+        WHERE giveaway_id = ?
+        ORDER BY entered_at ASC
+        """,
+        (giveaway[0],),
+    )
+
+    rows = await cursor.fetchall()
+
+    participants = []
+
+    for row in rows:
+
+        user_id = row[0]
+
+        member = guild.get_member(
+            user_id
+        )
+
+        if not member:
+            continue
+
+        extra = 0
+        extra_roles = []
+
+        for role_id, amount in extras.items():
+
+            try:
+
+                role_id_int = int(
+                    role_id
+                )
+
+                amount_int = int(
+                    amount
+                )
+
+            except Exception:
+
+                continue
+
+            role = guild.get_role(
+                role_id_int
+            )
+
+            if (
+                role
+                and role in member.roles
+            ):
+
+                extra += amount_int
+
+                extra_roles.append(
+                    (
+                        role,
+                        amount_int,
+                    )
+                )
+
+        total_entries = 1 + extra
+
+        participants.append(
+            {
+                "member": member,
+                "base": 1,
+                "extra": extra,
+                "total": total_entries,
+                "roles": extra_roles,
+            }
+        )
+
+    return participants
+
+
+# ============================================================
+# PARTICIPANT PAGES
+# ============================================================
+
+class ParticipantView(
+    discord.ui.View
+):
+
+    def __init__(
+        self,
+        pages,
+    ):
+
+        super().__init__(
+            timeout=300
+        )
+
+        self.pages = pages
+        self.page = 0
+
+        self.previous.disabled = True
+
+        if len(pages) <= 1:
+            self.next.disabled = True
+
+    def update_buttons(self):
+
+        self.previous.disabled = (
+            self.page <= 0
+        )
+
+        self.next.disabled = (
+            self.page >= len(self.pages) - 1
+        )
+
+    @discord.ui.button(
+        label="Previous",
+        emoji="◀️",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def previous(
+        self,
+        interaction,
+        button,
+    ):
+
+        if self.page > 0:
+            self.page -= 1
+
+        self.update_buttons()
+
+        await interaction.response.edit_message(
+            embed=self.pages[self.page],
+            view=self,
+        )
+
+    @discord.ui.button(
+        label="Next",
+        emoji="▶️",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def next(
+        self,
+        interaction,
+        button,
+    ):
+
+        if self.page < len(self.pages) - 1:
+            self.page += 1
+
+        self.update_buttons()
+
+        await interaction.response.edit_message(
+            embed=self.pages[self.page],
+            view=self,
+        )
+
+
+def build_participant_pages(
+    participants,
+    giveaway,
+):
+
+    if not participants:
+
+        embed = discord.Embed(
+            title="👥 Giveaway Participants",
+            description="No participants yet.",
+        )
+
+        return [embed]
+
+    pages = []
+
+    per_page = 10
+
+    chunks = [
+        participants[
+            index:index + per_page
+        ]
+        for index in range(
+            0,
+            len(participants),
+            per_page,
+        )
+    ]
+
+    for page_number, chunk in enumerate(
+        chunks,
+        start=1,
+    ):
+
+        embed = discord.Embed(
+            title="👥 Giveaway Participants",
+            description=(
+                f"🎁 **Prize:** {giveaway[6]}\n"
+                f"👥 **Participants:** "
+                f"{len(participants)}\n"
+                f"🎟️ **Total Entries:** "
+                f"{sum(x['total'] for x in participants)}"
+            ),
+        )
+
+        start_number = (
+            (page_number - 1)
+            * per_page
+            + 1
+        )
+
+        lines = []
+
+        for index, participant in enumerate(
+            chunk,
+            start=start_number,
+        ):
+
+            member = participant["member"]
+
+            role_text = "None"
+
+            if participant["roles"]:
+
+                role_text = ", ".join(
+                    f"{role.mention} +{amount}"
+                    for role, amount
+                    in participant["roles"]
+                )
+
+            lines.append(
+                f"**{index}. {member.display_name}**\n"
+                f"└ 🎟️ Entries: **{participant['total']}**\n"
+                f"└ ✨ Extra: {role_text}"
+            )
+
+        embed.add_field(
+            name="Participants",
+            value="\n\n".join(lines)[:1024],
+            inline=False,
+        )
+
+        embed.set_footer(
+            text=(
+                f"Page {page_number}/{len(chunks)}"
+            ),
+        )
+
+        pages.append(embed)
+
+    return pages
+
+
+# ============================================================
+# PARTICIPANT BUTTON
+# ============================================================
+
+class ParticipantsButton(
+    discord.ui.Button
+):
+
+    def __init__(self):
+
+        super().__init__(
+            label="Participants",
+            emoji="👥",
+            style=discord.ButtonStyle.secondary,
+            custom_id="cody_giveaway_participants",
+        )
+
+    async def callback(
+        self,
+        interaction: discord.Interaction,
+    ):
+
+        bot = interaction.client
+
+        if not interaction.guild:
+
+            await interaction.response.send_message(
+                "❌ Server only.",
+                ephemeral=True,
+            )
+
+            return
+
+        giveaway = await get_giveaway_by_message(
+            bot,
+            interaction.message.id,
+        )
+
+        if not giveaway:
+
+            await interaction.response.send_message(
+                "❌ Giveaway not found.",
+                ephemeral=True,
+            )
+
+            return
+
+        is_admin = (
+            isinstance(
+                interaction.user,
+                discord.Member,
+            )
+            and interaction.user.guild_permissions.administrator
+        )
+
+        is_creator = (
+            interaction.user.id
+            == giveaway[4]
+        )
+
+        is_host = (
+            interaction.user.id
+            == giveaway[5]
+        )
+
+        if not (
+            is_admin
+            or is_creator
+            or is_host
+        ):
+
+            await interaction.response.send_message(
+                "🔒 Only the giveaway creator, host, "
+                "or an administrator can view participants.",
+                ephemeral=True,
+            )
+
+            return
+
+        participants = await get_participants(
+            bot,
+            giveaway,
+            interaction.guild,
+        )
+
+        pages = build_participant_pages(
+            participants,
+            giveaway,
+        )
+
+        view = ParticipantView(
+            pages
+        )
+
+        await interaction.response.send_message(
+            embed=pages[0],
+            view=view,
+            ephemeral=True,
+        )
+
+
+# ============================================================
+# ACTIVE GIVEAWAY VIEW
 # ============================================================
 
 class GiveawayEntryButton(
@@ -1116,7 +1615,7 @@ class GiveawayEntryButton(
 
     async def callback(
         self,
-        interaction: discord.Interaction,
+        interaction,
     ):
 
         bot = interaction.client
@@ -1135,11 +1634,7 @@ class GiveawayEntryButton(
 
             return
 
-        giveaway_id = giveaway[0]
-        guild_id = giveaway[1]
-        status = giveaway[15]
-
-        if status != "active":
+        if giveaway[15] != "active":
 
             await interaction.response.send_message(
                 "❌ This giveaway is no longer active.",
@@ -1151,11 +1646,6 @@ class GiveawayEntryButton(
         guild = interaction.guild
 
         if not guild:
-
-            await interaction.response.send_message(
-                "❌ This can only be used in a server.",
-                ephemeral=True,
-            )
 
             return
 
@@ -1173,7 +1663,7 @@ class GiveawayEntryButton(
         if not member:
 
             await interaction.response.send_message(
-                "❌ I couldn't find your server member information.",
+                "❌ Couldn't find your member information.",
                 ephemeral=True,
             )
 
@@ -1187,18 +1677,17 @@ class GiveawayEntryButton(
 
         if required_role_id:
 
-            required_role = guild.get_role(
+            role = guild.get_role(
                 required_role_id
             )
 
             if (
-                required_role
-                and required_role not in member.roles
+                role
+                and role not in member.roles
             ):
 
                 await interaction.response.send_message(
-                    "❌ You need "
-                    f"{required_role.mention} "
+                    f"❌ You need {role.mention} "
                     "to enter this giveaway.",
                     ephemeral=True,
                 )
@@ -1219,13 +1708,10 @@ class GiveawayEntryButton(
             for role in member.roles
         }
 
-        banned_match = [
-            role_id
+        if any(
+            role_id in member_role_ids
             for role_id in banned_roles
-            if role_id in member_role_ids
-        ]
-
-        if banned_match:
+        ):
 
             await interaction.response.send_message(
                 "🚫 You have a role that is banned "
@@ -1243,26 +1729,26 @@ class GiveawayEntryButton(
 
         if required_messages > 0:
 
-            message_count = await get_member_message_count(
+            count = await get_member_message_count(
                 bot,
                 guild.id,
                 member.id,
             )
 
-            if message_count < required_messages:
+            if count < required_messages:
 
                 await interaction.response.send_message(
                     "💬 You need at least "
                     f"**{required_messages} messages** "
-                    "to enter this giveaway.\n\n"
-                    f"Your messages: **{message_count}**",
+                    "to enter.\n\n"
+                    f"Your messages: **{count}**",
                     ephemeral=True,
                 )
 
                 return
 
         # ----------------------------------------------------
-        # Check already entered
+        # Already entered
         # ----------------------------------------------------
 
         cursor = await bot.database.connection.execute(
@@ -1273,17 +1759,15 @@ class GiveawayEntryButton(
               AND user_id = ?
             """,
             (
-                giveaway_id,
+                giveaway[0],
                 member.id,
             ),
         )
 
-        existing = await cursor.fetchone()
-
-        if existing:
+        if await cursor.fetchone():
 
             await interaction.response.send_message(
-                "⚠️ You have already entered this giveaway.",
+                "⚠️ You have already entered.",
                 ephemeral=True,
             )
 
@@ -1302,7 +1786,7 @@ class GiveawayEntryButton(
             VALUES (?, ?)
             """,
             (
-                giveaway_id,
+                giveaway[0],
                 member.id,
             ),
         )
@@ -1317,7 +1801,7 @@ class GiveawayEntryButton(
 
         await update_giveaway_message(
             bot,
-            giveaway_id,
+            giveaway[0],
         )
 
 
@@ -1333,6 +1817,10 @@ class GiveawayEntryView(
 
         self.add_item(
             GiveawayEntryButton()
+        )
+
+        self.add_item(
+            ParticipantsButton()
         )
 
 
@@ -1355,7 +1843,7 @@ class GiveawayRerollButton(
 
     async def callback(
         self,
-        interaction: discord.Interaction,
+        interaction,
     ):
 
         bot = interaction.client
@@ -1373,11 +1861,6 @@ class GiveawayRerollButton(
             interaction.user,
             discord.Member,
         ):
-
-            await interaction.response.send_message(
-                "❌ Unable to verify permissions.",
-                ephemeral=True,
-            )
 
             return
 
@@ -1404,6 +1887,15 @@ class GiveawayRerollButton(
 
             return
 
+        if giveaway[15] != "ended":
+
+            await interaction.response.send_message(
+                "❌ This giveaway hasn't ended yet.",
+                ephemeral=True,
+            )
+
+            return
+
         winners = await choose_winners(
             bot,
             giveaway,
@@ -1414,8 +1906,8 @@ class GiveawayRerollButton(
         if not winners:
 
             await interaction.response.send_message(
-                "❌ There aren't enough eligible entrants "
-                "for a reroll.",
+                "❌ No eligible participant is available "
+                "for another winner.",
                 ephemeral=True,
             )
 
@@ -1427,11 +1919,8 @@ class GiveawayRerollButton(
         )
 
         await interaction.response.send_message(
-            f"🔄 **New winner(s):** {mentions}"
-        )
-
-        await interaction.channel.send(
-            f"🎉 Congratulations {mentions}!"
+            f"🔄 **New winner(s):** {mentions}\n\n"
+            f"🎁 Prize: **{giveaway[6]}**"
         )
 
 
@@ -1449,57 +1938,19 @@ class GiveawayRerollView(
             GiveawayRerollButton()
         )
 
-
-# ============================================================
-# MESSAGE COUNTER
-# ============================================================
-
-async def get_member_message_count(
-    bot,
-    guild_id: int,
-    user_id: int,
-) -> int:
-
-    # If the moderation/database system already has
-    # a message counter, use it when available.
-
-    try:
-
-        cursor = await bot.database.connection.execute(
-            """
-            SELECT message_count
-            FROM user_message_stats
-            WHERE guild_id = ?
-              AND user_id = ?
-            """,
-            (
-                guild_id,
-                user_id,
-            ),
+        self.add_item(
+            ParticipantsButton()
         )
 
-        row = await cursor.fetchone()
-
-        if row:
-            return int(row[0])
-
-    except Exception:
-        pass
-
-    # Fallback:
-    # If no message tracking table exists, this requirement
-    # cannot be verified yet.
-    return 0
-
 
 # ============================================================
-# CALCULATE ENTRY WEIGHT
+# ENTRY WEIGHT
 # ============================================================
 
 def calculate_entry_weight(
     member: discord.Member,
-    extra_entries: dict,
-) -> int:
+    extras: dict,
+):
 
     weight = 1
 
@@ -1508,15 +1959,24 @@ def calculate_entry_weight(
         for role in member.roles
     }
 
-    for role_id, bonus in extra_entries.items():
+    for role_id, bonus in extras.items():
 
         try:
-            role_id = int(role_id)
-            bonus = int(bonus)
+
+            role_id = int(
+                role_id
+            )
+
+            bonus = int(
+                bonus
+            )
+
         except Exception:
+
             continue
 
         if role_id in member_roles:
+
             weight += max(
                 0,
                 bonus,
@@ -1526,16 +1986,19 @@ def calculate_entry_weight(
 
 
 # ============================================================
-# GET ELIGIBLE MEMBERS
+# ELIGIBLE PARTICIPANTS
 # ============================================================
 
 async def get_eligible_entries(
     bot,
     giveaway,
-    guild: discord.Guild,
+    guild,
 ):
 
-    giveaway_id = giveaway[0]
+    extras = load_json(
+        giveaway[12],
+        {},
+    )
 
     required_role_id = giveaway[9]
 
@@ -1546,18 +2009,13 @@ async def get_eligible_entries(
 
     required_messages = giveaway[11]
 
-    extra_entries = load_json(
-        giveaway[12],
-        {},
-    )
-
     cursor = await bot.database.connection.execute(
         """
         SELECT user_id
         FROM giveaway_entries
         WHERE giveaway_id = ?
         """,
-        (giveaway_id,),
+        (giveaway[0],),
     )
 
     rows = await cursor.fetchall()
@@ -1566,25 +2024,22 @@ async def get_eligible_entries(
 
     for row in rows:
 
-        user_id = row[0]
-
         member = guild.get_member(
-            user_id
+            row[0]
         )
 
         if not member:
             continue
 
-        # Required role.
         if required_role_id:
 
-            if not any(
-                role.id == required_role_id
-                for role in member.roles
-            ):
+            role = guild.get_role(
+                required_role_id
+            )
+
+            if role and role not in member.roles:
                 continue
 
-        # Banned role.
         member_role_ids = {
             role.id
             for role in member.roles
@@ -1596,7 +2051,6 @@ async def get_eligible_entries(
         ):
             continue
 
-        # Required messages.
         if required_messages > 0:
 
             count = await get_member_message_count(
@@ -1610,7 +2064,7 @@ async def get_eligible_entries(
 
         weight = calculate_entry_weight(
             member,
-            extra_entries,
+            extras,
         )
 
         eligible.append(
@@ -1624,14 +2078,14 @@ async def get_eligible_entries(
 
 
 # ============================================================
-# WEIGHTED WINNER SELECTION
+# CHOOSE WINNERS
 # ============================================================
 
 async def choose_winners(
     bot,
     giveaway,
-    guild: discord.Guild,
-    reroll: bool = False,
+    guild,
+    reroll=False,
 ):
 
     eligible = await get_eligible_entries(
@@ -1640,10 +2094,6 @@ async def choose_winners(
         guild,
     )
 
-    if not eligible:
-        return []
-
-    # Remove previous winners during reroll.
     if reroll:
 
         cursor = await bot.database.connection.execute(
@@ -1666,16 +2116,21 @@ async def choose_winners(
             if item[0].id not in previous
         ]
 
-    winner_count = giveaway[8]
+    if not eligible:
+        return []
 
-    if len(eligible) < winner_count:
-        winner_count = len(eligible)
+    count = min(
+        giveaway[8],
+        len(eligible),
+    )
 
     selected = []
 
-    pool = list(eligible)
+    pool = list(
+        eligible
+    )
 
-    for _ in range(winner_count):
+    for _ in range(count):
 
         if not pool:
             break
@@ -1685,7 +2140,7 @@ async def choose_winners(
             for _, weight in pool
         )
 
-        random_value = random.uniform(
+        value = random.uniform(
             0,
             total_weight,
         )
@@ -1701,7 +2156,7 @@ async def choose_winners(
 
             current += weight
 
-            if random_value <= current:
+            if value <= current:
 
                 selected_index = index
                 break
@@ -1714,7 +2169,7 @@ async def choose_winners(
             member
         )
 
-    reroll_number = 1
+    reroll_number = 0
 
     if reroll:
 
@@ -1733,15 +2188,14 @@ async def choose_winners(
         row = await cursor.fetchone()
 
         reroll_number = (
-            (row[0] if row else 0)
-            + 1
+            row[0] + 1
         )
 
     for member in selected:
 
         await bot.database.connection.execute(
             """
-            INSERT OR REPLACE INTO giveaway_winners (
+            INSERT INTO giveaway_winners (
                 giveaway_id,
                 user_id,
                 reroll_number
@@ -1767,7 +2221,7 @@ async def choose_winners(
 async def build_giveaway_embed(
     bot,
     giveaway,
-    guild: discord.Guild,
+    guild,
 ):
 
     host = guild.get_member(
@@ -1780,34 +2234,29 @@ async def build_giveaway_embed(
         else f"<@{giveaway[5]}>"
     )
 
-    status = giveaway[15]
-
-    if status == "active":
-
-        end_time = giveaway[16]
+    if giveaway[15] == "active":
 
         try:
 
-            end_datetime = datetime.fromisoformat(
-                end_time
+            end_time = datetime.fromisoformat(
+                giveaway[16]
             )
 
             timestamp = int(
-                end_datetime.timestamp()
+                end_time.timestamp()
             )
 
             end_text = (
-                f"<t:{timestamp}:R>\n"
-                f"<t:{timestamp}:F>"
+                f"<t:{timestamp}:R>"
             )
 
         except Exception:
 
             end_text = "Unknown"
 
-    elif status == "ended":
+    elif giveaway[15] == "ended":
 
-        end_text = "🎉 Giveaway ended"
+        end_text = "🎉 Ended"
 
     else:
 
@@ -1833,7 +2282,8 @@ async def build_giveaway_embed(
             f"🏆 **Winners:** {giveaway[8]}\n"
             f"👤 **Host:** {host_text}\n"
             f"⏰ **Ends:** {end_text}\n\n"
-            f"🎟️ **Entries:** {entries}\n"
+            f"👥 **Participants:** {entries}\n\n"
+            "Click **🎉 Enter Giveaway** to participate!"
         ),
     )
 
@@ -1860,7 +2310,7 @@ async def build_giveaway_embed(
 
     if banned_roles:
 
-        names = []
+        roles = []
 
         for role_id in banned_roles:
 
@@ -1869,40 +2319,38 @@ async def build_giveaway_embed(
             )
 
             if role:
-                names.append(
+                roles.append(
                     role.mention
                 )
 
-        if names:
+        if roles:
 
             embed.add_field(
                 name="🚫 Banned Roles",
-                value=" ".join(names),
+                value=" ".join(roles),
                 inline=False,
             )
 
-    required_messages = giveaway[11]
-
-    if required_messages > 0:
+    if giveaway[11] > 0:
 
         embed.add_field(
             name="💬 Required Messages",
             value=str(
-                required_messages
+                giveaway[11]
             ),
             inline=True,
         )
 
-    extra_entries = load_json(
+    extras = load_json(
         giveaway[12],
         {},
     )
 
-    if extra_entries:
+    if extras:
 
-        bonuses = []
+        lines = []
 
-        for role_id, bonus in extra_entries.items():
+        for role_id, amount in extras.items():
 
             role = guild.get_role(
                 int(role_id)
@@ -1910,30 +2358,28 @@ async def build_giveaway_embed(
 
             if role:
 
-                bonuses.append(
-                    f"{role.mention} +{bonus}"
+                lines.append(
+                    f"{role.mention} +{amount}"
                 )
 
-        if bonuses:
+        if lines:
 
             embed.add_field(
                 name="✨ Extra Entries",
-                value="\n".join(
-                    bonuses
-                ),
+                value="\n".join(lines),
                 inline=False,
             )
 
-    if status == "ended":
+    if giveaway[15] == "active":
 
         embed.set_footer(
-            text="Giveaway ended • Use the button below to reroll"
+            text="Good luck! 🍀"
         )
 
     else:
 
         embed.set_footer(
-            text="Click the button below to enter!"
+            text="Giveaway ended • Reroll available"
         )
 
     return embed
@@ -1945,7 +2391,7 @@ async def build_giveaway_embed(
 
 async def update_giveaway_message(
     bot,
-    giveaway_id: int,
+    giveaway_id,
 ):
 
     giveaway = await get_giveaway(
@@ -1999,7 +2445,7 @@ async def update_giveaway_message(
 
     else:
 
-        view = None
+        return
 
     try:
 
@@ -2016,7 +2462,10 @@ async def update_giveaway_message(
             )
 
             embed.set_thumbnail(
-                url=f"attachment://{giveaway[14]}"
+                url=(
+                    f"attachment://"
+                    f"{giveaway[14]}"
+                )
             )
 
             await message.edit(
@@ -2035,16 +2484,18 @@ async def update_giveaway_message(
     except Exception:
 
         try:
+
             await message.edit(
                 embed=embed,
                 view=view,
             )
+
         except Exception:
             pass
 
 
 # ============================================================
-# CONFIGURATION VIEW
+# CONFIG VIEW
 # ============================================================
 
 class GiveawayConfigView(
@@ -2054,8 +2505,8 @@ class GiveawayConfigView(
     def __init__(
         self,
         bot,
-        giveaway_id: int,
-        creator_id: int,
+        giveaway_id,
+        creator_id,
     ):
 
         super().__init__(
@@ -2068,15 +2519,14 @@ class GiveawayConfigView(
 
     async def interaction_check(
         self,
-        interaction: discord.Interaction,
+        interaction,
     ):
 
         if interaction.user.id != self.creator_id:
 
             await interaction.response.send_message(
-                "🔒 This giveaway configuration belongs "
-                "to another administrator. Only the "
-                "administrator who created it can edit it.",
+                "🔒 Only the administrator who created "
+                "this giveaway can edit it.",
                 ephemeral=True,
             )
 
@@ -2086,7 +2536,6 @@ class GiveawayConfigView(
             interaction.user,
             discord.Member,
         ):
-
             return False
 
         if not interaction.user.guild_permissions.administrator:
@@ -2104,12 +2553,6 @@ class GiveawayConfigView(
         )
 
         if not giveaway:
-
-            await interaction.response.send_message(
-                "❌ Giveaway no longer exists.",
-                ephemeral=True,
-            )
-
             return False
 
         if giveaway[15] != "configuring":
@@ -2124,7 +2567,7 @@ class GiveawayConfigView(
         return True
 
     # --------------------------------------------------------
-    # DURATION
+    # TIME
     # --------------------------------------------------------
 
     @discord.ui.button(
@@ -2133,10 +2576,10 @@ class GiveawayConfigView(
         style=discord.ButtonStyle.primary,
         row=0,
     )
-    async def duration_button(
+    async def time_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         await interaction.response.send_modal(
@@ -2158,8 +2601,8 @@ class GiveawayConfigView(
     )
     async def winners_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         await interaction.response.send_modal(
@@ -2181,8 +2624,8 @@ class GiveawayConfigView(
     )
     async def prize_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         await interaction.response.send_modal(
@@ -2204,8 +2647,8 @@ class GiveawayConfigView(
     )
     async def host_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         await interaction.response.send_message(
@@ -2225,16 +2668,16 @@ class GiveawayConfigView(
         label="Required Role",
         emoji="🎭",
         style=discord.ButtonStyle.primary,
-        row=0,
+        row=1,
     )
     async def required_role_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         await interaction.response.send_message(
-            "🎭 Select the role required to enter.",
+            "🎭 Select the required role.",
             view=RequiredRoleView(
                 self.bot,
                 self.giveaway_id,
@@ -2252,14 +2695,14 @@ class GiveawayConfigView(
         style=discord.ButtonStyle.secondary,
         row=1,
     )
-    async def banned_roles_button(
+    async def banned_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         await interaction.response.send_message(
-            "🚫 Select the roles that cannot enter.",
+            "🚫 Select banned roles.",
             view=BannedRoleView(
                 self.bot,
                 self.giveaway_id,
@@ -2279,8 +2722,8 @@ class GiveawayConfigView(
     )
     async def messages_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         await interaction.response.send_modal(
@@ -2300,14 +2743,14 @@ class GiveawayConfigView(
         style=discord.ButtonStyle.secondary,
         row=1,
     )
-    async def extra_entries_button(
+    async def extra_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         await interaction.response.send_message(
-            "✨ Select a role to configure extra entries.",
+            "✨ Select the role that receives extra entries.",
             view=ExtraEntryRoleView(
                 self.bot,
                 self.giveaway_id,
@@ -2323,12 +2766,12 @@ class GiveawayConfigView(
         label="Thumbnail",
         emoji="🖼️",
         style=discord.ButtonStyle.secondary,
-        row=1,
+        row=2,
     )
     async def thumbnail_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         await request_thumbnail(
@@ -2339,7 +2782,7 @@ class GiveawayConfigView(
         )
 
     # --------------------------------------------------------
-    # TEST
+    # PREVIEW
     # --------------------------------------------------------
 
     @discord.ui.button(
@@ -2350,8 +2793,8 @@ class GiveawayConfigView(
     )
     async def preview_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         giveaway = await get_giveaway(
@@ -2379,12 +2822,12 @@ class GiveawayConfigView(
         label="Start Giveaway",
         emoji="🟢",
         style=discord.ButtonStyle.success,
-        row=2,
+        row=3,
     )
     async def start_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         giveaway = await get_giveaway(
@@ -2393,12 +2836,6 @@ class GiveawayConfigView(
         )
 
         if not giveaway:
-
-            await interaction.response.send_message(
-                "❌ Giveaway not found.",
-                ephemeral=True,
-            )
-
             return
 
         missing = []
@@ -2411,14 +2848,15 @@ class GiveawayConfigView(
 
         if (
             not giveaway[6]
-            or giveaway[6] == "Not configured"
+            or giveaway[6]
+            == "Not configured"
         ):
             missing.append("🎁 Prize")
 
         if missing:
 
             await interaction.response.send_message(
-                "❌ **Giveaway setup is incomplete.**\n\n"
+                "❌ **Setup incomplete.**\n\n"
                 + "\n".join(
                     f"• {item}"
                     for item in missing
@@ -2428,14 +2866,12 @@ class GiveawayConfigView(
 
             return
 
-        duration = giveaway[7]
-
         end_time = (
             datetime.now(
                 timezone.utc
             )
             + timedelta(
-                seconds=duration
+                seconds=giveaway[7]
             )
         ).isoformat()
 
@@ -2455,19 +2891,15 @@ class GiveawayConfigView(
 
         await self.bot.database.connection.commit()
 
-        # Send actual giveaway message.
-        embed = await build_giveaway_embed(
-            self.bot,
-            await get_giveaway(
-                self.bot,
-                self.giveaway_id,
-            ),
-            interaction.guild,
-        )
-
         giveaway = await get_giveaway(
             self.bot,
             self.giveaway_id,
+        )
+
+        embed = await build_giveaway_embed(
+            self.bot,
+            giveaway,
+            interaction.guild,
         )
 
         if giveaway[13] and giveaway[14]:
@@ -2515,34 +2947,19 @@ class GiveawayConfigView(
 
         await self.bot.database.connection.commit()
 
-        # Update configuration message.
-        try:
-
-            await interaction.response.edit_message(
-                embed=discord.Embed(
-                    title="🎉 Giveaway Started",
-                    description=(
-                        f"Your giveaway has started!\n\n"
-                        f"🎁 **Prize:** {giveaway[6]}\n"
-                        f"🏆 **Winners:** {giveaway[8]}\n"
-                        f"⏱️ **Duration:** "
-                        f"{format_duration(duration)}\n\n"
-                        f"🔗 [Jump to Giveaway]"
-                        f"({message.jump_url})"
-                    ),
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="🎉 Giveaway Started!",
+                description=(
+                    f"🎁 **Prize:** {giveaway[6]}\n"
+                    f"🏆 **Winners:** {giveaway[8]}\n"
+                    f"⏱️ **Duration:** "
+                    f"{format_duration(giveaway[7])}\n\n"
+                    f"[Jump to Giveaway]({message.jump_url})"
                 ),
-                view=None,
-            )
-
-        except Exception:
-
-            if not interaction.response.is_done():
-
-                await interaction.response.send_message(
-                    "🎉 Giveaway started!",
-                    ephemeral=True,
-                )
-
+            ),
+            view=None,
+        )
 
     # --------------------------------------------------------
     # REFRESH
@@ -2556,8 +2973,8 @@ class GiveawayConfigView(
     )
     async def refresh_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button,
     ):
 
         giveaway = await get_giveaway(
@@ -2581,7 +2998,7 @@ class GiveawayConfigView(
 # ============================================================
 
 def build_config_embed(
-    guild: discord.Guild,
+    guild,
     giveaway,
 ):
 
@@ -2640,18 +3057,18 @@ def build_config_embed(
                 names
             )
 
-    extra_entries = load_json(
+    extras = load_json(
         giveaway[12],
         {},
     )
 
     extra_text = "None"
 
-    if extra_entries:
+    if extras:
 
         lines = []
 
-        for role_id, amount in extra_entries.items():
+        for role_id, amount in extras.items():
 
             role = guild.get_role(
                 int(role_id)
@@ -2668,19 +3085,11 @@ def build_config_embed(
                 lines
             )
 
-    thumbnail = (
-        "🖼️ Configured"
-        if giveaway[13]
-        else "None"
-    )
-
-    status_map = {
+    status = {
         "configuring": "⚙️ Not Started",
         "active": "🟢 Active",
         "ended": "🔴 Ended",
-    }
-
-    status = status_map.get(
+    }.get(
         giveaway[15],
         "Unknown",
     )
@@ -2688,9 +3097,7 @@ def build_config_embed(
     embed = discord.Embed(
         title="🎉 Giveaway Configuration",
         description=(
-            "Configure your giveaway below.\n"
-            "Only the administrator who created "
-            "this configuration can edit it."
+            "Configure your giveaway before starting it."
         ),
     )
 
@@ -2756,7 +3163,11 @@ def build_config_embed(
 
     embed.add_field(
         name="🖼️ Thumbnail",
-        value=thumbnail,
+        value=(
+            "✅ Configured"
+            if giveaway[13]
+            else "None"
+        ),
         inline=True,
     )
 
@@ -2764,13 +3175,14 @@ def build_config_embed(
         name="⏱️ Duration Examples",
         value=(
             "`30s` • `10m` • `2hrs` • `1d` • `1w`\n"
-            "`1d 5h 30m` • `2hrs 20mins`"
+            "`1d 5h 30m` • `2hrs 20mins`\n"
+            "Capital or lowercase both work."
         ),
         inline=False,
     )
 
     embed.set_footer(
-        text="Configure everything before pressing Start Giveaway."
+        text="Only the creator can edit this configuration."
     )
 
     return embed
@@ -2780,20 +3192,57 @@ def build_config_embed(
 # GIVEAWAY COG
 # ============================================================
 
-class Giveaways(commands.Cog):
+class Giveaways(
+    commands.Cog
+):
 
-    def __init__(self, bot):
+    def __init__(
+        self,
+        bot,
+    ):
 
         self.bot = bot
 
         self.finish_giveaways.start()
 
-    async def cog_unload(self):
+    def cog_unload(
+        self,
+    ):
 
         self.finish_giveaways.cancel()
 
     # ========================================================
-    # /giveaway GROUP
+    # MESSAGE COUNTER
+    # ========================================================
+
+    @commands.Cog.listener()
+    async def on_message(
+        self,
+        message: discord.Message,
+    ):
+
+        if message.author.bot:
+            return
+
+        if not message.guild:
+            return
+
+        try:
+
+            await increment_message_count(
+                self.bot,
+                message.guild.id,
+                message.author.id,
+            )
+
+        except Exception as error:
+
+            print(
+                f"Giveaway message counter error: {error}"
+            )
+
+    # ========================================================
+    # GROUP
     # ========================================================
 
     giveaway_group = app_commands.Group(
@@ -2802,28 +3251,22 @@ class Giveaways(commands.Cog):
     )
 
     # ========================================================
-    # /giveaway create
+    # CREATE
     # ========================================================
 
     @giveaway_group.command(
         name="create",
-        description="Create a giveaway configuration.",
+        description="Create a giveaway.",
     )
     @app_commands.checks.has_permissions(
         administrator=True
     )
     async def giveaway_create(
         self,
-        interaction: discord.Interaction,
+        interaction,
     ):
 
         if not interaction.guild:
-
-            await interaction.response.send_message(
-                "❌ This command can only be used in a server.",
-                ephemeral=True,
-            )
-
             return
 
         await self.bot.database.connection.execute(
@@ -2838,25 +3281,20 @@ class Giveaways(commands.Cog):
                 winners,
                 status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'configuring')
+            VALUES (?, ?, ?, ?, ?, 0, 1, 'configuring')
             """,
             (
                 interaction.guild.id,
                 interaction.channel.id,
                 interaction.user.id,
                 interaction.user.id,
-                "Not configured",
-                0,
-                1,
             ),
         )
 
         await self.bot.database.connection.commit()
 
         cursor = await self.bot.database.connection.execute(
-            """
-            SELECT last_insert_rowid()
-            """
+            "SELECT last_insert_rowid()"
         )
 
         row = await cursor.fetchone()
@@ -2873,19 +3311,87 @@ class Giveaways(commands.Cog):
             giveaway,
         )
 
-        view = GiveawayConfigView(
-            self.bot,
-            giveaway_id,
-            interaction.user.id,
-        )
-
         await interaction.response.send_message(
             embed=embed,
-            view=view,
+            view=GiveawayConfigView(
+                self.bot,
+                giveaway_id,
+                interaction.user.id,
+            ),
         )
 
     # ========================================================
-    # /giveaway end
+    # PARTICIPANTS COMMAND
+    # ========================================================
+
+    @giveaway_group.command(
+        name="participants",
+        description="View giveaway participants and entries.",
+    )
+    @app_commands.describe(
+        message_id="Giveaway message ID."
+    )
+    @app_commands.checks.has_permissions(
+        administrator=True
+    )
+    async def giveaway_participants(
+        self,
+        interaction,
+        message_id: str,
+    ):
+
+        try:
+
+            message_id_int = int(
+                message_id
+            )
+
+        except ValueError:
+
+            await interaction.response.send_message(
+                "❌ Invalid message ID.",
+                ephemeral=True,
+            )
+
+            return
+
+        giveaway = await get_giveaway_by_message(
+            self.bot,
+            message_id_int,
+        )
+
+        if not giveaway:
+
+            await interaction.response.send_message(
+                "❌ Giveaway not found.",
+                ephemeral=True,
+            )
+
+            return
+
+        participants = await get_participants(
+            self.bot,
+            giveaway,
+            interaction.guild,
+        )
+
+        pages = build_participant_pages(
+            participants,
+            giveaway,
+        )
+
+        view = ParticipantView(
+            pages
+        )
+
+        await interaction.response.send_message(
+            embed=pages[0],
+            view=view,
+            ephemeral=True,
+        )
+
+    # ========================================================
+    # END
     # ========================================================
 
     @giveaway_group.command(
@@ -2893,14 +3399,14 @@ class Giveaways(commands.Cog):
         description="End an active giveaway.",
     )
     @app_commands.describe(
-        message_id="The giveaway message ID."
+        message_id="Giveaway message ID."
     )
     @app_commands.checks.has_permissions(
         administrator=True
     )
     async def giveaway_end(
         self,
-        interaction: discord.Interaction,
+        interaction,
         message_id: str,
     ):
 
@@ -2952,22 +3458,22 @@ class Giveaways(commands.Cog):
         )
 
     # ========================================================
-    # /giveaway reroll
+    # REROLL
     # ========================================================
 
     @giveaway_group.command(
         name="reroll",
-        description="Reroll the winner of an ended giveaway.",
+        description="Reroll an ended giveaway.",
     )
     @app_commands.describe(
-        message_id="The ended giveaway message ID."
+        message_id="Giveaway message ID."
     )
     @app_commands.checks.has_permissions(
         administrator=True
     )
     async def giveaway_reroll(
         self,
-        interaction: discord.Interaction,
+        interaction,
         message_id: str,
     ):
 
@@ -3003,30 +3509,24 @@ class Giveaways(commands.Cog):
         if giveaway[15] != "ended":
 
             await interaction.response.send_message(
-                "❌ The giveaway must be ended before rerolling.",
+                "❌ The giveaway must be ended first.",
                 ephemeral=True,
             )
-
-            return
-
-        guild = interaction.guild
-
-        if not guild:
 
             return
 
         winners = await choose_winners(
             self.bot,
             giveaway,
-            guild,
+            interaction.guild,
             reroll=True,
         )
 
         if not winners:
 
             await interaction.response.send_message(
-                "❌ No eligible members are available "
-                "for another winner.",
+                "❌ No eligible participants remain "
+                "for a reroll.",
                 ephemeral=True,
             )
 
@@ -3038,15 +3538,18 @@ class Giveaways(commands.Cog):
         )
 
         await interaction.response.send_message(
-            f"🔄 **Rerolled winner(s):** {mentions}"
+            f"🔄 **New winner(s):** {mentions}\n\n"
+            f"🎁 Prize: **{giveaway[6]}**"
         )
 
     # ========================================================
-    # AUTOMATIC GIVEAWAY FINISHER
+    # AUTOMATIC END LOOP
     # ========================================================
 
     @tasks.loop(seconds=5)
-    async def finish_giveaways(self):
+    async def finish_giveaways(
+        self,
+    ):
 
         try:
 
@@ -3098,7 +3601,9 @@ class Giveaways(commands.Cog):
             )
 
     @finish_giveaways.before_loop
-    async def before_finish_giveaways(self):
+    async def before_finish_giveaways(
+        self,
+    ):
 
         await self.bot.wait_until_ready()
 
@@ -3108,7 +3613,7 @@ class Giveaways(commands.Cog):
 
     async def end_giveaway(
         self,
-        giveaway_id: int,
+        giveaway_id,
     ):
 
         giveaway = await get_giveaway(
@@ -3133,7 +3638,6 @@ class Giveaways(commands.Cog):
             self.bot,
             giveaway,
             guild,
-            reroll=False,
         )
 
         await self.bot.database.connection.execute(
@@ -3187,20 +3691,20 @@ class Giveaways(commands.Cog):
 
         if winners:
 
-            winner_mentions = " ".join(
+            mentions = " ".join(
                 member.mention
                 for member in winners
             )
 
             embed.add_field(
                 name="🏆 Winner(s)",
-                value=winner_mentions,
+                value=mentions,
                 inline=False,
             )
 
-            content = (
+            result_message = (
                 "🎉 **GIVEAWAY ENDED!**\n\n"
-                f"Congratulations {winner_mentions}!\n"
+                f"Congratulations {mentions}!\n"
                 f"You won **{giveaway[6]}**!"
             )
 
@@ -3212,9 +3716,9 @@ class Giveaways(commands.Cog):
                 inline=False,
             )
 
-            content = (
+            result_message = (
                 "🎉 **GIVEAWAY ENDED!**\n\n"
-                "Unfortunately, there were no eligible winners."
+                "There were no eligible winners."
             )
 
         try:
@@ -3251,13 +3755,13 @@ class Giveaways(commands.Cog):
                 )
 
             await channel.send(
-                content
+                result_message
             )
 
         except Exception as error:
 
             print(
-                f"Could not update ended giveaway: {error}"
+                f"Could not update giveaway: {error}"
             )
 
     # ========================================================
@@ -3265,11 +3769,12 @@ class Giveaways(commands.Cog):
     # ========================================================
 
     @giveaway_create.error
+    @giveaway_participants.error
     @giveaway_end.error
     @giveaway_reroll.error
     async def giveaway_error(
         self,
-        interaction: discord.Interaction,
+        interaction,
         error,
     ):
 
@@ -3291,7 +3796,7 @@ class Giveaways(commands.Cog):
 
             message = (
                 "❌ An error occurred while processing "
-                "the giveaway command."
+                "the giveaway."
             )
 
         if interaction.response.is_done():
@@ -3313,7 +3818,9 @@ class Giveaways(commands.Cog):
 # SETUP
 # ============================================================
 
-async def setup(bot):
+async def setup(
+    bot,
+):
 
     await setup_giveaway_database(
         bot
@@ -3323,12 +3830,12 @@ async def setup(bot):
         Giveaways(bot)
     )
 
-    # Persistent active giveaway button.
+    # Persistent active giveaway controls.
     bot.add_view(
         GiveawayEntryView()
     )
 
-    # Persistent reroll button.
+    # Persistent ended giveaway controls.
     bot.add_view(
         GiveawayRerollView()
     )
