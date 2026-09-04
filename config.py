@@ -8,7 +8,6 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
-GUILD_ID = os.getenv("GUILD_ID", "").strip()
 
 DATABASE_PATH = os.getenv(
     "DATABASE_PATH",
