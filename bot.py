@@ -29,6 +29,7 @@ COGS = [
     "cogs.moderation",
     "cogs.welcome",
     "cogs.tickets",
+    "cogs.giveaways",
 ]
 
 
