@@ -1,1 +1,1 @@
-
+"""Discord bot feature cogs."""
