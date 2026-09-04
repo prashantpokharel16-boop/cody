@@ -30,6 +30,7 @@ COGS = [
     "cogs.welcome",
     "cogs.tickets",
     "cogs.giveaways",
+    "cogs.announce",
 ]
 
 
