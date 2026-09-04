@@ -17,22 +17,6 @@ class Welcome(commands.Cog):
 
         self.setup_database()
 
-        # ---------------------------------------------------
-        # JOIN EVENT DEDUP
-        # ---------------------------------------------------
-        # Discord's gateway can (and does) redeliver a
-        # GUILD_MEMBER_ADD event for the same member, most
-        # commonly around a reconnect/RESUME. Without a guard,
-        # on_member_join() fires twice for the same join and
-        # send_welcome() runs twice, which is why the GIF was
-        # showing up 2 times. This tracks recently-processed
-        # (guild_id, member_id) pairs and ignores repeats that
-        # arrive within a short window.
-        # ---------------------------------------------------
-        self._recent_joins = {}
-        self._join_lock = asyncio.Lock()
-        self._join_dedup_window = 15  # seconds
-
     # =========================================================
     # DATABASE
     # =========================================================
@@ -674,6 +658,82 @@ class Welcome(commands.Cog):
         return output
 
     # =========================================================
+    # WELCOME MESSAGE DUPLICATE PROTECTION
+    # =========================================================
+
+    async def cleanup_duplicate_welcome_messages(
+        self,
+        channel,
+        *,
+        message_type,
+        content=None
+    ):
+        """
+        Keep only one matching welcome message of the same type
+        within the last 1 second.
+
+        Text and GIF are checked separately, so the intended
+        two-message welcome system is preserved:
+        1. Welcome text
+        2. Animated GIF
+        """
+
+        now = time.time()
+        matches = []
+
+        try:
+            async for message in channel.history(limit=20):
+                age = now - message.created_at.timestamp()
+
+                if age > 1.0:
+                    break
+
+                if message.author.id != self.bot.user.id:
+                    continue
+
+                if message_type == "text":
+                    if content is not None and message.content == content:
+                        matches.append(message)
+
+                elif message_type == "gif":
+                    is_welcome_gif = (
+                        bool(message.embeds)
+                        and any(
+                            embed.image
+                            and embed.image.url
+                            and "attachment://welcome.gif" in embed.image.url
+                            for embed in message.embeds
+                        )
+                    )
+
+                    if is_welcome_gif:
+                        matches.append(message)
+
+            if len(matches) > 1:
+                matches.sort(key=lambda m: m.created_at)
+
+                # Keep the first/oldest and delete extras.
+                for duplicate in matches[1:]:
+                    try:
+                        await duplicate.delete(
+                            reason="Duplicate welcome message protection"
+                        )
+                    except (
+                        discord.NotFound,
+                        discord.Forbidden,
+                        discord.HTTPException
+                    ):
+                        pass
+
+        except (
+            discord.Forbidden,
+            discord.HTTPException
+        ) as error:
+            print(
+                f"[WELCOME] Duplicate check failed: {error}"
+            )
+
+    # =========================================================
     # SEND WELCOME
     # =========================================================
 
@@ -694,10 +754,7 @@ class Welcome(commands.Cog):
         channel_id = settings[1]
         auto_role_id = settings[3]
 
-        if not enabled:
-            return
-
-        if not channel_id:
+        if not enabled or not channel_id:
             return
 
         channel = guild.get_channel(
@@ -718,7 +775,6 @@ class Welcome(commands.Cog):
 
             if role:
                 try:
-                    # Make sure bot can assign it.
                     if (
                         guild.me
                         and role < guild.me.top_role
@@ -745,18 +801,19 @@ class Welcome(commands.Cog):
 
         try:
             await channel.send(
-                content=welcome_text,
-                allowed_mentions=discord.AllowedMentions(
-                    users=False,
-                    roles=False,
-                    everyone=False
-                )
+                welcome_text,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+
+            await self.cleanup_duplicate_welcome_messages(
+                channel,
+                message_type="text",
+                content=welcome_text
             )
 
         except Exception as error:
             print(
-                f"[WELCOME] Failed to send welcome text "
-                f"for {member}: {error}"
+                f"[WELCOME] TEXT MESSAGE FAILED: {error}"
             )
 
         # -----------------------------------------------------
@@ -784,10 +841,14 @@ class Welcome(commands.Cog):
                 file=file
             )
 
+            await self.cleanup_duplicate_welcome_messages(
+                channel,
+                message_type="gif"
+            )
+
         except Exception as error:
             print(
-                f"[WELCOME] Failed to send animated banner "
-                f"for {member}: {error}"
+                f"[WELCOME] GIF MESSAGE FAILED: {error}"
             )
 
     # =========================================================
@@ -1596,45 +1657,13 @@ class Welcome(commands.Cog):
     ):
         # This is the ONLY automatic welcome listener.
         #
-        # It calls send_welcome() exactly once — but Discord's
-        # gateway can redeliver the same GUILD_MEMBER_ADD event
-        # (most commonly around a reconnect/RESUME), which would
-        # otherwise cause this listener to fire twice for the
-        # same join and produce two welcome GIFs. The dedup guard
-        # below drops repeat events for the same member that
-        # arrive within a short window.
+        # It calls send_welcome() exactly once.
         #
         # send_welcome() sends:
         #   1 banner
         #   1 separate message
         #
         # Nothing else.
-
-        key = (member.guild.id, member.id)
-        now = time.monotonic()
-
-        async with self._join_lock:
-            last_seen = self._recent_joins.get(key)
-
-            if (
-                last_seen is not None
-                and now - last_seen < self._join_dedup_window
-            ):
-                # Duplicate join event for the same member,
-                # arriving within the dedup window — ignore it.
-                return
-
-            self._recent_joins[key] = now
-
-            # Periodically clear out old entries so this dict
-            # doesn't grow forever.
-            stale_keys = [
-                k for k, t in self._recent_joins.items()
-                if now - t > 60
-            ]
-
-            for stale_key in stale_keys:
-                del self._recent_joins[stale_key]
 
         await self.send_welcome(
             member
