@@ -11,17 +11,7 @@ from database import Database
 
 COGS = [
     "cogs.moderation",
-    "cogs.automod",
     "cogs.welcome",
-    "cogs.logging",
-    "cogs.tickets",
-    "cogs.roles",
-    "cogs.levels",
-    "cogs.economy",
-    "cogs.fun",
-    "cogs.utility",
-    "cogs.polls",
-    "cogs.configuration",
 ]
 
 
