@@ -28,6 +28,7 @@ logger = logging.getLogger("cody")
 COGS = [
     "cogs.moderation",
     "cogs.welcome",
+    "cogs.tickets",
 ]
 
 
