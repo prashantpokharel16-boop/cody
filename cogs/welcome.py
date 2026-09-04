@@ -1,6 +1,7 @@
 import asyncio
 import io
 import sqlite3
+import time
 
 import discord
 from discord.ext import commands
@@ -15,6 +16,22 @@ class Welcome(commands.Cog):
         self.db_path = "data/bot.db"
 
         self.setup_database()
+
+        # ---------------------------------------------------
+        # JOIN EVENT DEDUP
+        # ---------------------------------------------------
+        # Discord's gateway can (and does) redeliver a
+        # GUILD_MEMBER_ADD event for the same member, most
+        # commonly around a reconnect/RESUME. Without a guard,
+        # on_member_join() fires twice for the same join and
+        # send_welcome() runs twice, which is why the GIF was
+        # showing up 2 times. This tracks recently-processed
+        # (guild_id, member_id) pairs and ignores repeats that
+        # arrive within a short window.
+        # ---------------------------------------------------
+        self._recent_joins = {}
+        self._join_lock = asyncio.Lock()
+        self._join_dedup_window = 15  # seconds
 
     # =========================================================
     # DATABASE
@@ -1579,13 +1596,45 @@ class Welcome(commands.Cog):
     ):
         # This is the ONLY automatic welcome listener.
         #
-        # It calls send_welcome() exactly once.
+        # It calls send_welcome() exactly once — but Discord's
+        # gateway can redeliver the same GUILD_MEMBER_ADD event
+        # (most commonly around a reconnect/RESUME), which would
+        # otherwise cause this listener to fire twice for the
+        # same join and produce two welcome GIFs. The dedup guard
+        # below drops repeat events for the same member that
+        # arrive within a short window.
         #
         # send_welcome() sends:
         #   1 banner
         #   1 separate message
         #
         # Nothing else.
+
+        key = (member.guild.id, member.id)
+        now = time.monotonic()
+
+        async with self._join_lock:
+            last_seen = self._recent_joins.get(key)
+
+            if (
+                last_seen is not None
+                and now - last_seen < self._join_dedup_window
+            ):
+                # Duplicate join event for the same member,
+                # arriving within the dedup window — ignore it.
+                return
+
+            self._recent_joins[key] = now
+
+            # Periodically clear out old entries so this dict
+            # doesn't grow forever.
+            stale_keys = [
+                k for k, t in self._recent_joins.items()
+                if now - t > 60
+            ]
+
+            for stale_key in stale_keys:
+                del self._recent_joins[stale_key]
 
         await self.send_welcome(
             member
