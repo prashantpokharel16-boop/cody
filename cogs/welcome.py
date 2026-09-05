@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 class Welcome(commands.Cog):
+    VERSION = "WELCOME-TEXT-FIRST-V2"
     def __init__(self, bot):
         self.bot = bot
         self.db_path = "data/bot.db"
@@ -1737,6 +1738,12 @@ class Welcome(commands.Cog):
 # =============================================================
 
 async def setup(bot):
+    # Prevent the Welcome cog from being registered twice in one process.
+    if bot.get_cog("Welcome") is not None:
+        print("[WELCOME] Already loaded; skipping duplicate cog registration.")
+        return
+
+    print(f"[WELCOME] Loading {Welcome.VERSION}")
     await bot.add_cog(
         Welcome(bot)
     )
