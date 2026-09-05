@@ -661,6 +661,68 @@ class Welcome(commands.Cog):
     # SEND WELCOME
     # =========================================================
 
+    async def _remove_duplicate_welcome_gifs(
+        self,
+        channel,
+        member,
+        keep_message_id
+    ):
+        """
+        Remove duplicate welcome GIF messages produced within a
+        very small window for the same member.
+
+        The marker in the embed footer identifies this member's
+        current welcome event. Only later duplicates are deleted.
+        """
+
+        try:
+            now = time.time()
+            matches = []
+
+            async for message in channel.history(limit=20):
+                age = now - message.created_at.timestamp()
+
+                if age > 3:
+                    break
+
+                if message.author.id != self.bot.user.id:
+                    continue
+
+                has_marker = any(
+                    embed.footer
+                    and embed.footer.text
+                    == f"welcome-event:{member.guild.id}:{member.id}"
+                    for embed in message.embeds
+                )
+
+                if has_marker:
+                    matches.append(message)
+
+            if len(matches) <= 1:
+                return
+
+            matches.sort(key=lambda m: m.created_at)
+
+            for duplicate in matches[1:]:
+                try:
+                    await duplicate.delete(
+                        reason="Duplicate welcome GIF protection"
+                    )
+                except (
+                    discord.NotFound,
+                    discord.Forbidden,
+                    discord.HTTPException
+                ):
+                    pass
+
+        except (
+            discord.Forbidden,
+            discord.HTTPException
+        ) as error:
+            print(
+                f"[WELCOME] Duplicate GIF cleanup failed: {error}"
+            )
+
     async def send_welcome(
         self,
         member
@@ -689,7 +751,7 @@ class Welcome(commands.Cog):
             channel_id
         )
 
-        if not channel:
+        if not isinstance(channel, discord.TextChannel):
             return
 
         # -----------------------------------------------------
@@ -703,7 +765,6 @@ class Welcome(commands.Cog):
 
             if role:
                 try:
-                    # Make sure bot can assign it.
                     if (
                         guild.me
                         and role < guild.me.top_role
@@ -720,8 +781,43 @@ class Welcome(commands.Cog):
                     pass
 
         # -----------------------------------------------------
-        # CREATE ONE BANNER
+        # MESSAGE 1 — CONFIGURED WELCOME TEXT
         # -----------------------------------------------------
+
+        formatted_message = self.format_message(
+            welcome_message,
+            member
+        )
+
+        if not formatted_message.strip():
+            formatted_message = (
+                f"Welcome {member.display_name} "
+                f"to {guild.name}! 🎉"
+            )
+
+        try:
+            await channel.send(
+                content=formatted_message,
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=True,
+                    everyone=False
+                )
+            )
+
+        except Exception as error:
+            print(
+                f"[WELCOME] Failed to send welcome text "
+                f"for {member}: {error}"
+            )
+
+        # -----------------------------------------------------
+        # MESSAGE 2 — EXISTING ANIMATED GIF
+        # -----------------------------------------------------
+
+        welcome_marker = (
+            f"welcome-event:{guild.id}:{member.id}"
+        )
 
         try:
             gif_bytes = await self.create_welcome_gif(
@@ -739,43 +835,31 @@ class Welcome(commands.Cog):
                 url="attachment://welcome.gif"
             )
 
-            # IMPORTANT:
-            # Exactly ONE banner message.
-            await channel.send(
+            # Tiny marker used only to identify duplicate copies.
+            embed.set_footer(
+                text=welcome_marker
+            )
+
+            sent_gif = await channel.send(
                 embed=embed,
                 file=file
             )
 
-        except (
-            discord.Forbidden,
-            discord.HTTPException
-        ):
-            return
+            # Let Discord finish creating the message, then remove
+            # any duplicate copy created in the same send window.
+            await asyncio.sleep(0.35)
 
-        # -----------------------------------------------------
-        # CREATE ONE SEPARATE MESSAGE
-        # -----------------------------------------------------
-
-        formatted_message = self.format_message(
-            welcome_message,
-            member
-        )
-
-        try:
-            await channel.send(
-                formatted_message,
-                allowed_mentions=discord.AllowedMentions(
-                    users=True,
-                    roles=True,
-                    everyone=False
-                )
+            await self._remove_duplicate_welcome_gifs(
+                channel,
+                member,
+                sent_gif.id
             )
 
-        except (
-            discord.Forbidden,
-            discord.HTTPException
-        ):
-            pass
+        except Exception as error:
+            print(
+                f"[WELCOME] Failed to send animated banner "
+                f"for {member}: {error}"
+            )
 
     # =========================================================
     # PANEL PERMISSION
@@ -1581,61 +1665,15 @@ class Welcome(commands.Cog):
         self,
         member: discord.Member
     ):
-        # -----------------------------------------------------
-        # PROCESS-WIDE DUPLICATE JOIN EVENT PROTECTION
-        # -----------------------------------------------------
-        # Discord should fire this event once. If the Welcome
-        # cog is accidentally loaded more than once, however,
-        # multiple listeners can receive the same join event.
+        # This is the ONLY automatic welcome listener.
         #
-        # This shared bot-level guard makes sure the same user
-        # can trigger the automatic welcome only once within
-        # the protection window.
-        now = time.monotonic()
-
-        sent_cache = getattr(
-            self.bot,
-            "_welcome_join_cache",
-            None
-        )
-
-        if sent_cache is None:
-            sent_cache = {}
-            setattr(
-                self.bot,
-                "_welcome_join_cache",
-                sent_cache
-            )
-
-        cache_key = (
-            member.guild.id,
-            member.id
-        )
-
-        last_sent = sent_cache.get(cache_key)
-
-        if (
-            last_sent is not None
-            and now - last_sent < 10
-        ):
-            print(
-                f"[WELCOME] Duplicate join event ignored "
-                f"for {member} ({member.id})"
-            )
-            return
-
-        # Record BEFORE any await so a second listener cannot
-        # start generating another GIF for the same join event.
-        sent_cache[cache_key] = now
-
-        # Remove old cache entries occasionally.
-        cutoff = now - 30
-
-        for key, timestamp in list(
-            sent_cache.items()
-        ):
-            if timestamp < cutoff:
-                del sent_cache[key]
+        # It calls send_welcome() exactly once.
+        #
+        # send_welcome() sends:
+        #   1 banner
+        #   1 separate message
+        #
+        # Nothing else.
 
         await self.send_welcome(
             member
