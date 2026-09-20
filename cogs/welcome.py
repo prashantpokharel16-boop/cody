@@ -295,20 +295,6 @@ class Welcome(commands.Cog):
                         pass
 
             # -------------------------------------------------
-            # MESSAGE BEFORE GIFT / WELCOME BANNER
-            # -------------------------------------------------
-
-            try:
-                await channel.send(
-                    f"Welcome {member.display_name} to {guild.name}!"
-                )
-            except Exception as error:
-                print(
-                    f"[WELCOME] Intro message send failed for "
-                    f"{member}: {error}"
-                )
-
-            # -------------------------------------------------
             # MESSAGE 1: CONFIGURED TEXT
             # -------------------------------------------------
 
